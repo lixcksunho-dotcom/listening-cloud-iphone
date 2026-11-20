@@ -121,7 +121,7 @@ async function preparePart2AnswerClips(number){
    prepared[letter]=await ctx.decodeAudioData(arr.buffer);
   }));
   preparedAnswers.set(number,prepared);
-  if(payload.complete)setTtsStatus(number+"번 선택지 음성 출력 미리 준비 완료 · 문제 듣는 중");
+  if(payload.complete&&!part2AudioBusy)setTtsStatus(number+"번 선택지 음성 출력 미리 준비 완료 · 문제 듣는 중");
  }catch(e){setTtsStatus(number+"번 음성 출력 사전 준비 실패 · 필요 시 직접 생성: "+String(e))}
  finally{preparingAnswers.delete(number)}
 }
@@ -144,7 +144,9 @@ function queuePart2Audio(id,spoken){
  const number=Number(match[1]);
  if(!part2Mode){enqueuePart2AudioRaw(id,spoken);return;}
  if(number<part2NextAudibleNumber||part2DeliveredNumbers.has(number)||part2ReadyToSpeak.has(number))return;
+ part2AnswerReceivedAt.set(number,performance.now());
  part2ReadyToSpeak.set(number,{id,spoken});
+ // This is a fire-and-forget playback path. It does not await the ongoing mic preview for number+1.
  part2DrainOrderedAudio();
 }
 function enqueuePart2AudioRaw(id,spoken){
@@ -191,14 +193,24 @@ async function playPart2AudioQueue(){
      buffer=await ctx.decodeAudioData(encoded.slice(0));
      }
     }
-    await ctx.resume();
+    // Cached audio must start immediately; do not await a resume on an already running AudioContext.
+    if(ctx.state!=="running")await ctx.resume();
     if(ctx.state!=="running")throw Error("아이폰 오디오 엔진 정지됨");
     const framesBeforeAudio=micFramesSeen;
     await new Promise((resolve,reject)=>{
      const source=ctx.createBufferSource();part2OutputSource=source;
      source.buffer=buffer;source.connect(ctx.destination);
      source.onended=()=>{part2OutputSource=null;resolve(null)};
-     try{setTtsStatus(spoken+" · 한국어 정답 음성 재생 중");source.start(0)}
+     try{
+      const n=Number(match?.[1]);
+      const acceptedAt=part2AnswerReceivedAt.get(n);
+      if(part2Mode&&acceptedAt!==undefined){
+       const queueDelayMs=Math.round(performance.now()-acceptedAt);
+       $("part2SpeedStats").textContent=spoken+" · 정답 확정→오디오 시작 "+queueDelayMs+"ms · 다음 문제 분석 유지";
+      }
+      setTtsStatus(spoken+" · 한국어 정답 음성 재생 중 · 다음 번호 분석 유지");
+      source.start(0);
+     }
      catch(e){part2OutputSource=null;reject(e)}
     });
     const framesWhileSpeaking=micFramesSeen-framesBeforeAudio;
@@ -246,11 +258,13 @@ const part2AnnouncedNumbers=new Set();
 // Capture and inference remain independent; this cursor only controls playback order.
 let part2NextAudibleNumber=7;
 const part2ReadyToSpeak=new Map();
+const part2AnswerReceivedAt=new Map();
 const part2DeliveredNumbers=new Set();
 function part2ResetDelivery(first){
  part2NextAudibleNumber=first;
  part2ReadyToSpeak.clear();
  part2DeliveredNumbers.clear();
+ part2AnswerReceivedAt.clear();
 }
 function part2DrainOrderedAudio(){
  let count=0;
@@ -350,7 +364,9 @@ async function part2SendPreview(force=false){
   $("part2SpeedStats").textContent="실시간 분석 중 · 인식한 선택지 "+(letters||"대기")+" / "+(result.complete?"정답 후보 준비":"계속 듣는 중");
   if(result.complete&&/^[ABC]$/.test(result.answer||"")){
    const number=Number(result.question_number)||part2ExpectedNumber;
-   if(number!==part2ExpectedNumber||part2AnnouncedNumbers.has(number))return;
+   // A delayed answer to 7 is still valid while number 8 is being analyzed.
+   // Never skip/discard it only because the analysis cursor has moved forward.
+   if(number>part2ExpectedNumber||number<part2NextAudibleNumber||part2AnnouncedNumbers.has(number))return;
    const fingerprint=part2QuestionFingerprint(result.transcript);
    if(!fingerprint)return;
    const previousFingerprint=part2QuestionFingerprints.get(number-1);
@@ -366,11 +382,13 @@ async function part2SendPreview(force=false){
     if(part2AnnouncedNumbers.has(number))return;
     part2AnnouncedNumbers.add(number);
     if(part2Candidate.questionFingerprint)part2QuestionFingerprints.set(number,part2Candidate.questionFingerprint);
+    const analysisWasAlreadyAhead=part2ExpectedNumber>number;
     queuePart2Audio("preview-"+liveSessionId+"-"+number,spoken);
-    part2ExpectedNumber=number+1;
+    part2ExpectedNumber=Math.max(part2ExpectedNumber,number+1);
     if(number<200)void preparePart2AnswerClips(number+1);
-    liveMessage(spoken+" · 다음 문항 시작 감지, 앞부분을 유지하며 분석 계속");
-    part2KeepRecentAudio();
+    liveMessage(spoken+" · "+part2ExpectedNumber+"번 분석과 동시에 음성 재생");
+    // Never reset the active microphone window for a late older answer.
+    if(!analysisWasAlreadyAhead)part2KeepRecentAudio();
    }else part2MaybeAnnounce(true);
   }
  }catch(error){
@@ -393,11 +411,12 @@ function part2MaybeAnnounce(force=false){
  part2AnnouncedNumbers.add(number);
  if(part2Candidate.questionFingerprint)part2QuestionFingerprints.set(number,part2Candidate.questionFingerprint);
  // Mic continues capturing. No reset/flush that can delete question 8's start.
+ const analysisWasAlreadyAhead=part2ExpectedNumber>number;
  queuePart2Audio("preview-"+liveSessionId+"-"+number,spoken);
- part2ExpectedNumber=number+1;
+ part2ExpectedNumber=Math.max(part2ExpectedNumber,number+1);
  if(liveRunning&&number<200)void preparePart2AnswerClips(number+1);
- liveMessage("✓ C 선택지 종료 감지 · "+spoken+" · 다음 번호 연속 분석");
- part2KeepRecentAudio();
+ liveMessage("✓ "+spoken+" · "+part2ExpectedNumber+"번 듣기·분석 계속");
+ if(!analysisWasAlreadyAhead)part2KeepRecentAudio();
 }
 const PART2_MIN_SECONDS=2.75;
 const PART2_MAX_SECONDS=27;
