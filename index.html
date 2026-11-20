@@ -80,11 +80,24 @@ async function retry(){
  if(busy||!token())return;busy=true;try{const files=await showPending();for(const f of files){
   try{
    const mime=(f.blob.type||"audio/mp4").split(";")[0];
-   const r=await authed(API+"?action=upload",{method:"POST",headers:{"Content-Type":mime,"x-client-chunk-id":f.id},body:f.blob});
-   const j=await r.json();if(!r.ok)throw Error(j.error||r.status);
+   const kb=Math.round(f.blob.size/1024);
+   if(f.blob.size>10*1024*1024)throw Error("파일이 10MB를 초과했습니다. 이 파일은 기기에 보관되고 삭제되지 않습니다.");
+   say("보관된 녹음 "+kb+"KB · 클라우드 업로드 요청 중 (최대 75초)");
+   const control=new AbortController();
+   const timeout=setTimeout(()=>control.abort(),75000);
+   let r;
+   try{
+    r=await authed(API+"?action=upload",{method:"POST",headers:{"Content-Type":mime,"x-client-chunk-id":f.id},body:f.blob,signal:control.signal});
+   }finally{clearTimeout(timeout);}
+   say("서버 응답 수신 · 상태 확인 중");
+   const j=await r.json();if(!r.ok)throw Error("HTTP "+r.status+" · "+(j.error||"unknown"));
    if(["completed","awaiting_configuration","error"].includes(j.status)){await store("readwrite",s=>s.delete(f.id));say(j.status==="completed"?"전사 완료":j.status==="awaiting_configuration"?"클라우드 업로드 완료. 음성 인식 API 키 설정을 기다리고 있습니다.":"업로드 완료, 전사 처리 오류. 서버에서 재시도 가능합니다.");}
    else say("서버 저장 완료");
-  }catch(e){say("전송 실패. 녹음은 기기에 보관됩니다: "+String(e));break;}
+  }catch(e){
+   const timedOut=e && (e.name==="AbortError"||String(e).includes("aborted"));
+   say(timedOut?"전송 시간 초과(75초). 녹음은 보관 중입니다. 네트워크 확인 후 [보관된 녹음 다시 전송]을 눌러주세요.":"전송 실패 · 녹음은 기기에 보관 중: "+String(e));
+   break;
+  }
  }await showPending();await refresh();}finally{busy=false;}
 }
 $("retry").onclick=()=>retry();$("refresh").onclick=()=>refresh();
