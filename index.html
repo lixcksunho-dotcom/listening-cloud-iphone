@@ -326,7 +326,7 @@ async function part2SendPreview(force=false){
     if(number<200)void preparePart2AnswerClips(number+1);
     liveMessage(spoken+" · 다음 문항 시작 감지, 앞부분을 유지하며 분석 계속");
     part2KeepRecentAudio();
-   }else part2MaybeAnnounce();
+   }else part2MaybeAnnounce(true);
   }
  }catch(error){
   if(epoch===part2PreviewEpoch)setTtsStatus("실시간 분석 연결 상태: "+String(error));
@@ -334,10 +334,10 @@ async function part2SendPreview(force=false){
   if(epoch===part2PreviewEpoch)part2PreviewInFlight=false;
  }
 }
-function part2MaybeAnnounce(){
+function part2MaybeAnnounce(force=false){
  if(!liveRunning||!part2Mode||!part2Candidate||!vadTalking||!liveRate)return;
- // Do not speak before C has ended. Require 0.48 s of acoustic silence.
- if(vadSilent<liveRate*PART2_SILENCE_SECONDS)return;
+ // A complete AI transcript confirms C ended. Announce immediately; otherwise wait for acoustic silence.
+ if(!force&&vadSilent<liveRate*PART2_SILENCE_SECONDS)return;
  const now=performance.now();
  // Never use an old candidate if subsequent speech was heard after preview capture.
  const secondsCaptured=liveFrameCount/liveRate;
