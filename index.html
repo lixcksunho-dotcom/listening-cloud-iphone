@@ -251,6 +251,7 @@ const QUESTION_SILENCE_SECONDS=2.0;
 const PART2_SILENCE_SECONDS=0.48;
 const PART2_PREVIEW_INTERVAL_MS=2050;
 let part2PreviewInFlight=false,part2PreviewAt=0,part2PreviewEpoch=0,part2ForcedPreviewAt=0;
+let part2PreviewLimitReached=false;
 let part2Candidate=null,part2LastSpeechAt=0,part2LatestPreviewAt=0;
 const part2AnnouncedChunks=new Set();
 const part2AnnouncedNumbers=new Set();
@@ -338,10 +339,11 @@ function part2ResetStreaming(){
  part2Candidate=null;
  part2PreviewInFlight=false;
  part2PreviewAt=0;part2LatestPreviewAt=0;part2LastSpeechAt=0;part2ForcedPreviewAt=0;
+ part2PreviewLimitReached=false;
  resetVAD();vadPreroll=[];vadPreSamples=0;
 }
 async function part2SendPreview(force=false){
- if(!liveRunning||!part2Mode||part2PreviewInFlight||!token()||liveFrameCount<liveRate*2.5)return;
+ if(!liveRunning||!part2Mode||part2PreviewLimitReached||part2PreviewInFlight||!token()||liveFrameCount<liveRate*2.5)return;
  const t=performance.now();
  if(!force&&t-part2PreviewAt<PART2_PREVIEW_INTERVAL_MS)return;
  const epoch=part2PreviewEpoch;
@@ -358,7 +360,17 @@ async function part2SendPreview(force=false){
   })}finally{clearTimeout(timer)}
   const result=await response.json();
   if(!liveRunning||!part2Mode||epoch!==part2PreviewEpoch)return;
-  if(!response.ok)throw Error(result.error||"HTTP "+response.status);
+  if(!response.ok){
+   if(response.status===429){
+    part2PreviewLimitReached=true;
+    const message="실시간 AI 분석 이용 한도 초과 · 이번 세션 분석 중단 · 서버 한도 확인 필요";
+    $("part2SpeedStats").textContent=message;
+    liveMessage(message);
+    setTtsStatus(message);
+    return;
+   }
+   throw Error(result.error||"HTTP "+response.status);
+  }
   part2LatestPreviewAt=performance.now();
   const letters=result.heard_labels||"";
   $("part2SpeedStats").textContent="실시간 분석 중 · 인식한 선택지 "+(letters||"대기")+" / "+(result.complete?"정답 후보 준비":"계속 듣는 중");
@@ -820,7 +832,7 @@ $("liveStart").onclick=async()=>{
   const status=await authed(API+"?action=key-status");const k=await status.json();
   if(!k.configured){liveMessage("이 세션에 AI 키가 연결되지 않았습니다. 자동 연결 상태를 확인하세요.");return}
   // Select voice mode before configuring the iPhone microphone.
-  voiceMode=selectedMode()==="voice";part2Mode=selectedMode()==="part2";part2ExpectedNumber=Number($("part2Start").value)||7;part2AnnouncedNumbers.clear();part2AnnouncedChunks.clear();part2QuestionFingerprints.clear();part2ResetDelivery(part2ExpectedNumber);part2ResetStreaming();numberDetected=false;detectedQuestionNumber=null;alreadySpoken.clear();speechQueue.length=0;
+  voiceMode=selectedMode()==="voice";part2Mode=selectedMode()==="part2";part2ExpectedNumber=Number($("part2Start").value)||7;part2AnnouncedNumbers.clear();part2AnnouncedChunks.clear();part2QuestionFingerprints.clear();part2ResetDelivery(part2ExpectedNumber);part2ResetStreaming();part2PreviewLimitReached=false;numberDetected=false;detectedQuestionNumber=null;alreadySpoken.clear();speechQueue.length=0;
   liveRunning=true;
   await acquireLiveMicrophone();
   liveTextMode=selectedMode()==="live"||voiceMode;
