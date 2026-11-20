@@ -207,8 +207,8 @@ function numberGateForChunk(job){
 }
 let voiceMode=false;
 const QUESTION_SILENCE_SECONDS=2.0;
-const PART2_SILENCE_SECONDS=0.6;
-const PART2_PREVIEW_INTERVAL_MS=2700;
+const PART2_SILENCE_SECONDS=0.48;
+const PART2_PREVIEW_INTERVAL_MS=2300;
 let part2PreviewInFlight=false,part2PreviewAt=0,part2PreviewEpoch=0,part2ForcedPreviewAt=0;
 let part2Candidate=null,part2LastSpeechAt=0,part2LatestPreviewAt=0;
 const part2AnnouncedChunks=new Set();
@@ -267,7 +267,7 @@ async function part2SendPreview(force=false){
 }
 function part2MaybeAnnounce(){
  if(!liveRunning||!part2Mode||!part2Candidate||!vadTalking||!liveRate)return;
- // Do not speak before C has ended. Wait for ≥0.6 s of acoustic silence.
+ // Do not speak before C has ended. Require 0.48 s of acoustic silence.
  if(vadSilent<liveRate*PART2_SILENCE_SECONDS)return;
  const now=performance.now();
  // Never use an old candidate if subsequent speech was heard after preview capture.
@@ -528,7 +528,7 @@ function captureAudioFrame(event){
        if(part2Candidate&&liveFrameCount/liveRate-part2Candidate.previewedSeconds>2.4)part2Candidate=null;
       }
       else vadSilent+=chunk.length;
-      // Preview every ~2.7s, including during spoken C. Never announce here.
+      // Preview every ~2.3s, including during spoken C. Never announce here.
       if(performance.now()-part2PreviewAt>=PART2_PREVIEW_INTERVAL_MS&&!part2PreviewInFlight)
        void part2SendPreview();
       if(vadSilent>=liveRate*PART2_SILENCE_SECONDS){
@@ -667,7 +667,9 @@ $("liveStart").onclick=async()=>{
   try{unlockPart2Output()}catch(e){setTtsStatus("아이폰 음성 출력 준비 실패: "+String(e))}
   const first=Number($("part2Start").value)||7;
   void preparePart2AnswerClips(first);
-  if(first<200)void preparePart2AnswerClips(first+1);
+  // For the four-item continuous trial preload 7-10 answer audio immediately.
+  if(first===7){for(let n=8;n<=10;n++)void preparePart2AnswerClips(n)}
+  else if(first<200)void preparePart2AnswerClips(first+1);
  }
  try{
   const status=await authed(API+"?action=key-status");const k=await status.json();
