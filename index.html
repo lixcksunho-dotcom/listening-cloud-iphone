@@ -2,8 +2,8 @@
 const BASE="https://iufsbynxhztirmiccmjn.supabase.co";
 const KEY="sb_publishable_eufD__fKmYJUU1u4AQqwHg_Be45WTXV";
 const API=BASE+"/functions/v1/listening-guest";
-const invite=new URL(location.href).searchParams.get("activate")||"";
-if(invite){const clean=new URL(location.href);clean.searchParams.delete("activate");history.replaceState(null,"",clean.pathname+clean.search+clean.hash);}
+const invite=new URLSearchParams(location.hash.slice(1)).get("activate")||"";
+if(invite){history.replaceState(null,"",location.pathname+location.search);}
 const $=(id)=>document.getElementById(id);
 let session=null,recorder=null,stream=null,parts=[],started=0,ticker=null,db=null,busy=false;
 function say(t){$("msg").textContent=t;}
