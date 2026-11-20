@@ -120,12 +120,19 @@ async function preparePart2AnswerClips(number){
    for(let i=0;i<binary.length;i++)arr[i]=binary.charCodeAt(i);
    prepared[letter]=await ctx.decodeAudioData(arr.buffer);
   }));
-  preparedAnswers.set(number,prepared);
-  if(payload.complete&&!part2AudioBusy)setTtsStatus(number+"번 선택지 음성 출력 미리 준비 완료 · 문제 듣는 중");
+  // A 200 response may still have zero or missing clips. Never cache
+  // an empty/partial preparation as a successful, permanently ready item.
+  if(["A","B","C"].every(letter=>prepared[letter])){
+   preparedAnswers.set(number,prepared);
+   if(!part2AudioBusy)setTtsStatus(number+"번 선택지 음성 출력 미리 준비 완료 · 문제 듣는 중");
+  }else{
+   setTtsStatus(number+"번 음성 파일 불완전 · 재요청 가능 · 마이크 분석 계속");
+  }
  }catch(e){setTtsStatus(number+"번 음성 출력 사전 준비 실패 · 필요 시 직접 생성: "+String(e))}
  finally{preparingAnswers.delete(number)}
 }
 let part2AudioBusy=false;
+const part2PrefetchLastTry=new Map();
 let part2LastSpoken=null;
 function isIOSPart2Device(){
  return /iPad|iPhone|iPod/i.test(navigator.userAgent)||navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1;
@@ -178,7 +185,8 @@ async function playPart2AudioQueue(){
  part2AudioBusy=true;
  try{
   while(part2AudioQueue.length){
-   const {id,spoken}=part2AudioQueue.shift();
+   const job=part2AudioQueue.shift();
+   const {id,spoken}=job;
    try{
     const ctx=part2PlaybackContext();
     if(!ctx||ctx.state==="closed")throw Error("아이폰 오디오 엔진 없음");
@@ -193,12 +201,20 @@ async function playPart2AudioQueue(){
       const number=Number(match?.[1]);
       const letter=match?.[2];
       setTtsStatus(spoken+" · 음성 준비 확인 중 · 마이크 연속 수음");
-      for(let tries=0;tries<8&&!buffer;tries++){
-       if(!preparingAnswers.has(number))await preparePart2AnswerClips(number);
-       buffer=preparedAnswers.get(number)?.[letter]||null;
-       if(!buffer&&tries<7)await new Promise(resolve=>setTimeout(resolve,120));
+      // Never await a network request inside the single serialized audio queue.
+      // Yield it, leaving mic capture, ASR previews, and queued results active.
+      if(!preparingAnswers.has(number)&&(!part2PrefetchLastTry.has(number)||performance.now()-part2PrefetchLastTry.get(number)>1600)){
+       part2PrefetchLastTry.set(number,performance.now());
+       void preparePart2AnswerClips(number);
       }
-      if(!buffer)throw Error("한국어 음성 준비 실패 · 마이크는 계속 수음 중");
+      const retry=Number(job.retry||0);
+      if(retry<60){
+       part2AudioQueue.unshift({...job,retry:retry+1});
+       setTtsStatus(spoken+" · 음성 파일 준비 중 · 영어 분석 지속 ("+Math.round(retry*0.2*10)/10+"초)");
+       setTimeout(()=>{if(liveRunning&&part2Mode)void playPart2AudioQueue()},200);
+       break;
+      }
+      throw Error("음성 파일 준비 12초 초과 · 출력 실패 · 마이크 분석 유지");
      }else{
      setTtsStatus(spoken+" · 사전 준비 음성 없음 · 서버 음성 요청");
      const response=await authed(API+"?action=speak-answer",{
@@ -293,6 +309,7 @@ function part2ResetDelivery(first){
  part2ReadyToSpeak.clear();
  part2DeliveredNumbers.clear();
  part2AnswerReceivedAt.clear();
+ part2PrefetchLastTry.clear();
 }
 function part2DrainOrderedAudio(){
  let count=0;
