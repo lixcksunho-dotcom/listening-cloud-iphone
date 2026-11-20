@@ -854,9 +854,15 @@ $("liveStart").onclick=async()=>{
   try{unlockPart2Output()}catch(e){setTtsStatus("아이폰 음성 출력 준비 실패: "+String(e))}
   const first=Number($("part2Start").value)||7;
   void preparePart2AnswerClips(first);
-  // For the four-item continuous trial preload 7-10 answer audio immediately.
-  if(first===7){for(let n=8;n<=10;n++)void preparePart2AnswerClips(n)}
-  else if(first<200)void preparePart2AnswerClips(first+1);
+  // The first four answers are ready before C finishes; remaining 7-15
+  // are prefetched later, independently of mic capture and live inference.
+  if(first===7){
+   for(let n=8;n<=10;n++)void preparePart2AnswerClips(n);
+   setTimeout(()=>{
+    if(!liveRunning||!part2Mode)return;
+    for(let n=11;n<=15;n++)void preparePart2AnswerClips(n);
+   },4500);
+  }else if(first<200)void preparePart2AnswerClips(first+1);
  }
  try{
   const status=await authed(API+"?action=key-status");const k=await status.json();
