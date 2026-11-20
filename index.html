@@ -233,7 +233,7 @@ async function part2SendPreview(force=false){
   const control=new AbortController(),timer=setTimeout(()=>control.abort(),12000);
   let response;
   try{response=await authed(API+"?action=preview-part2",{
-   method:"POST",headers:{"Content-Type":"audio/wav"},body:blob,signal:control.signal
+   method:"POST",headers:{"Content-Type":"audio/wav","x-part2-expected-number":String(part2ExpectedNumber)},body:blob,signal:control.signal
   })}finally{clearTimeout(timer)}
   const result=await response.json();
   if(!liveRunning||!part2Mode||epoch!==part2PreviewEpoch)return;
@@ -243,8 +243,21 @@ async function part2SendPreview(force=false){
   $("part2SpeedStats").textContent="실시간 분석 중 · 인식한 선택지 "+(letters||"대기")+" / "+(result.complete?"정답 후보 준비":"계속 듣는 중");
   if(result.complete&&/^[ABC]$/.test(result.answer||"")){
    const number=Number(result.question_number)||part2ExpectedNumber;
+   if(number!==part2ExpectedNumber)return;
    part2Candidate={number,letter:result.answer,previewedSeconds:size/rate,at:performance.now()};
-   part2MaybeAnnounce();
+   if(result.following_question_started){
+    // The next question is already underway; report the late result rather than
+    // holding question 7 until the end of question 8.
+    const spoken=number+"번 "+result.answer;
+    const nextId=liveSessionId+"_"+String(liveChunkNum+1).padStart(5,"0");
+    part2AnnouncedChunks.add(nextId);
+    queuePart2Audio("preview-"+nextId,spoken);
+    part2ExpectedNumber=number+1;
+    void preparePart2AnswerClips(number+1);
+    liveMessage(spoken+" · 다음 문항이 이미 시작되어 늦게 안내됨");
+    void flushLiveSamples();
+    part2ResetStreaming();
+   }else part2MaybeAnnounce();
   }
  }catch(error){
   if(epoch===part2PreviewEpoch)setTtsStatus("실시간 분석 연결 상태: "+String(error));
@@ -510,7 +523,10 @@ function captureAudioFrame(event){
       // No fragmentation on pauses between the question, A, B and C.
       liveSamples.push(chunk);liveFrameCount+=chunk.length;
       if(!vadTalking){vadTalking=true;vadSilent=0;}
-      if(talking){vadSilent=0;part2ForcedPreviewAt=0;part2LastSpeechAt=performance.now();vadVoiced+=chunk.length;}
+      if(talking){
+       vadSilent=0;part2ForcedPreviewAt=0;part2LastSpeechAt=performance.now();vadVoiced+=chunk.length;
+       if(part2Candidate&&liveFrameCount/liveRate-part2Candidate.previewedSeconds>2.4)part2Candidate=null;
+      }
       else vadSilent+=chunk.length;
       // Preview every ~2.7s, including during spoken C. Never announce here.
       if(performance.now()-part2PreviewAt>=PART2_PREVIEW_INTERVAL_MS&&!part2PreviewInFlight)
@@ -523,7 +539,7 @@ function captureAudioFrame(event){
        part2MaybeAnnounce();
       }
       // Fail-safe for long directions or missed delimiters: preserve full raw audio.
-      if(liveFrameCount>=liveRate*PART2_MAX_SECONDS&&!part2Candidate){
+      if(liveFrameCount>=liveRate*PART2_MAX_SECONDS){
        void flushLiveSamples();
        part2ResetStreaming();
        liveMessage("긴 오디오 구간 저장 · 다음 문항 계속 듣는 중");
