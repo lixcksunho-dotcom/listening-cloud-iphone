@@ -1,0 +1,62 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#132640"><title>Listening Cloud</title><style>body{font-family:-apple-system,BlinkMacSystemFont,system-ui;background:#f3f6fb;color:#142943;max-width:650px;margin:auto;padding:20px}header{background:#142943;color:white;border-radius:18px;padding:24px}h1{font-size:24px;margin:4px 0}h2{font-size:17px}section{background:white;border-radius:17px;padding:20px;margin-top:16px;box-shadow:0 1px 5px #ccd4e040}input,button{box-sizing:border-box;width:100%;padding:13px;margin-top:8px;border-radius:11px;font-size:15px}input{border:1px solid #bec9d9}button{border:0;background:#275ee8;color:white;font-weight:700}button.secondary{background:#e8eef9;color:#142943}button:disabled{opacity:.5}#clock{font-size:39px;font-weight:800;margin:16px}#state{font-weight:600;color:#245bcb}small{color:#687a92;line-height:1.5}article{border-top:1px solid #e5e9ef;padding:14px 0;white-space:pre-wrap;overflow-wrap:anywhere}#work{display:none}#msg{white-space:pre-wrap;background:#fff5da;border-radius:10px;padding:12px;margin-top:12px}</style></head><body><header><small style="color:#b5c8ea">HTTPS · PRIVATE AUDIO</small><h1>Listening Cloud</h1><div>아이폰 영어 듣기 · 연속 녹음 · 안전한 임시 보관</div></header><div id="msg">시작하려면 로그인하세요. 기존 Expo 녹음은 건드리지 않습니다.</div><section id="auth"><h2>계정 로그인</h2><input id="email" autocomplete="email" type="email" placeholder="이메일"><input id="password" type="password" autocomplete="current-password" placeholder="비밀번호 (6자 이상)"><button id="login">로그인</button><button id="signup" class="secondary">처음 사용: 계정 만들기</button><small>가입 시 이메일 인증이 필요할 수 있습니다. 인증 메일을 확인하세요.</small></section><div id="work"><section><h2>스피커 영어 음원 녹음</h2><div id="state">녹음 대기</div><div id="clock">00:00</div><button id="start">연속 녹음 시작</button><button id="stop" disabled class="secondary">녹음 종료 · 클라우드 전송</button><small>앱을 전면에 유지하세요. iOS 화면 잠금이나 다른 앱으로 전환하면 녹음이 중단될 수 있습니다. 저장된 녹음은 IndexedDB에서 자동 재전송을 시도합니다. 녹음 중 주변 사람의 동의를 받으세요.</small></section><section><h2>보관된 녹음</h2><div id="pending"></div><button id="retry" class="secondary">보관된 녹음 다시 전송</button></section><section><h2>영어 인식 결과</h2><button id="refresh" class="secondary">결과 새로고침</button><div id="results"></div></section><section><button id="logout" class="secondary">로그아웃</button></section></div><script>
+const BASE="https://iufsbynxhztirmiccmjn.supabase.co";
+const KEY="sb_publishable_eufD__fKmYJUU1u4AQqwHg_Be45WTXV";
+const API=BASE+"/functions/v1/listening-cloud";
+const $=(id)=>document.getElementById(id);
+let session=null,recorder=null,stream=null,parts=[],started=0,ticker=null,db=null,busy=false;
+function say(t){$("msg").textContent=t;}
+function token(){return session?.access_token||"";}
+async function dbOpen(){return new Promise((ok,bad)=>{let r=indexedDB.open("listening-cloud-v1",1);r.onupgradeneeded=()=>{r.result.createObjectStore("pending",{keyPath:"id"});};r.onsuccess=()=>{db=r.result;ok(db);};r.onerror=()=>bad(r.error);});}
+function store(mode,fn){return new Promise((ok,bad)=>{const tx=db.transaction("pending",mode),os=tx.objectStore("pending");const q=fn(os);q.onsuccess=()=>ok(q.result);q.onerror=()=>bad(q.error);});}
+const getPending=()=>store("readonly",s=>s.getAll());
+function updateAuth(){const valid=!!token();$("auth").style.display=valid?"none":"block";$("work").style.display=valid?"block":"none";}
+async function authCall(action){
+ const email=$("email").value.trim(),password=$("password").value;
+ if(!email||password.length<6){say("이메일과 6자 이상의 비밀번호를 입력하세요.");return;}
+ const url=action==="signup"?BASE+"/auth/v1/signup":BASE+"/auth/v1/token?grant_type=password";
+ const res=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json","apikey":KEY},body:JSON.stringify({email,password})});
+ const data=await res.json();if(!res.ok){say("인증 오류: "+(data.msg||data.error_description||data.message||res.status));return;}
+ if(data.access_token){session=data;localStorage.setItem("listening_session",JSON.stringify(session));updateAuth();say("로그인 성공. 마이크를 사용할 수 있습니다.");await refresh();await retry();}
+ else say("가입 신청이 접수됐습니다. 이메일 인증 후 로그인하세요.");
+}
+$("login").onclick=()=>authCall("login").catch(e=>say(String(e)));
+$("signup").onclick=()=>authCall("signup").catch(e=>say(String(e)));
+$("logout").onclick=()=>{session=null;localStorage.removeItem("listening_session");updateAuth();say("로그아웃했습니다. 기기에 보관된 녹음은 삭제되지 않았습니다.");};
+async function authed(url,opt={}){
+ let res=await fetch(url,{...opt,headers:{...opt.headers,Authorization:"Bearer "+token(),"apikey":KEY}});
+ if(res.status===401&&session?.refresh_token){
+  const r=await fetch(BASE+"/auth/v1/token?grant_type=refresh_token",{method:"POST",headers:{"apikey":KEY,"Content-Type":"application/json"},body:JSON.stringify({refresh_token:session.refresh_token})});
+  if(r.ok){session=await r.json();localStorage.setItem("listening_session",JSON.stringify(session));res=await fetch(url,{...opt,headers:{...opt.headers,Authorization:"Bearer "+token(),"apikey":KEY}});}
+ }
+ return res;
+}
+function clock(){const t=Math.floor((Date.now()-started)/1000);$("clock").textContent=String(Math.floor(t/60)).padStart(2,"0")+":"+String(t%60).padStart(2,"0");}
+$("start").onclick=async()=>{
+ try{
+  if(!window.MediaRecorder)throw Error("이 브라우저는 녹음을 지원하지 않습니다.");
+  stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
+  const types=["audio/mp4","audio/webm;codecs=opus","audio/webm"];const mime=types.find(x=>MediaRecorder.isTypeSupported(x));
+  recorder=mime?new MediaRecorder(stream,{mimeType:mime}):new MediaRecorder(stream);
+  parts=[];recorder.ondataavailable=e=>{if(e.data.size)parts.push(e.data);};
+  recorder.onerror=()=>say("녹음 장치 오류가 발생했습니다.");
+  recorder.onstop=async()=>{clearInterval(ticker);stream.getTracks().forEach(t=>t.stop());const blob=new Blob(parts,{type:recorder.mimeType||"audio/mp4"});parts=[];const id=crypto.randomUUID().replaceAll("-","");if(blob.size<100){say("녹음 파일이 비어 있습니다.");return;}try{await store("readwrite",s=>s.put({id,blob,createdAt:Date.now()}));say("녹음 "+Math.round(blob.size/1024)+"KB 기기에 보관 완료. 전송 중...");await showPending();await retry();}catch(e){say("로컬 보관 실패: "+String(e));}};
+  recorder.start(1000);started=Date.now();clock();ticker=setInterval(clock,400);$("state").textContent="● 연속 녹음 중";$("start").disabled=true;$("stop").disabled=false;say("녹음이 시작됐습니다. 소리가 들리는 동안 이 화면을 유지하세요.");
+ }catch(e){say("녹음 시작 실패: "+e.message);if(stream)stream.getTracks().forEach(t=>t.stop());}
+};
+$("stop").onclick=()=>{if(!recorder||recorder.state==="inactive")return;$("stop").disabled=true;$("start").disabled=false;$("state").textContent="녹음 종료 · 저장 중";recorder.stop();};
+async function showPending(){const files=await getPending();$("pending").textContent=files.length+"개 파일 보관 중";return files;}
+async function retry(){
+ if(busy||!token())return;busy=true;try{const files=await showPending();for(const f of files){
+  try{
+   const mime=(f.blob.type||"audio/mp4").split(";")[0];
+   const r=await authed(API+"?action=upload",{method:"POST",headers:{"Content-Type":mime,"x-client-chunk-id":f.id},body:f.blob});
+   const j=await r.json();if(!r.ok)throw Error(j.error||r.status);
+   if(["completed","awaiting_configuration","error"].includes(j.status)){await store("readwrite",s=>s.delete(f.id));say(j.status==="completed"?"전사 완료":j.status==="awaiting_configuration"?"클라우드 업로드 완료. 음성 인식 API 키 설정을 기다리고 있습니다.":"업로드 완료, 전사 처리 오류. 서버에서 재시도 가능합니다.");}
+   else say("서버 저장 완료");
+  }catch(e){say("전송 실패. 녹음은 기기에 보관됩니다: "+String(e));break;}
+ }await showPending();await refresh();}finally{busy=false;}
+}
+$("retry").onclick=()=>retry();$("refresh").onclick=()=>refresh();
+async function refresh(){if(!token())return;try{const r=await authed(API);if(!r.ok)throw Error("HTTP "+r.status);const d=await r.json();$("results").replaceChildren();for(const job of d.jobs||[]){const a=document.createElement("article");a.textContent=new Date(job.created_at).toLocaleString("ko-KR")+" · "+job.status+"\n"+(job.transcript||job.error_message||"전사 대기 중");if(job.status==="awaiting_configuration"||job.status==="error"){const b=document.createElement("button");b.textContent="전사 다시 시도";b.className="secondary";b.onclick=async()=>{const x=await authed(API+"?action=retry",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:job.id})});say(JSON.stringify(await x.json()));await refresh();};a.append(b);}$("results").append(a);}if(!d.jobs?.length)$("results").textContent="아직 전송된 녹음이 없습니다.";}catch(e){say("결과 조회 오류: "+String(e));}}
+(async()=>{await dbOpen();try{session=JSON.parse(localStorage.getItem("listening_session")||"null");}catch{}updateAuth();await showPending();if(token()){await refresh();await retry();}window.addEventListener("online",retry);document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible")retry();});})().catch(e=>say("초기화 오류: "+String(e)));
+</script></body></html>
