@@ -124,11 +124,12 @@ async function preparePart2AnswerClips(number){
   // an empty/partial preparation as a successful, permanently ready item.
   if(["A","B","C"].every(letter=>prepared[letter])){
    preparedAnswers.set(number,prepared);
-   if(!part2AudioBusy)setTtsStatus(number+"번 선택지 음성 출력 미리 준비 완료 · 문제 듣는 중");
+   // Background prefetch must never overwrite a live answer's playback status.
+   if(!liveRunning&&!part2AudioBusy)setTtsStatus(number+"번 선택지 음성 출력 준비 완료");
   }else{
-   setTtsStatus(number+"번 음성 파일 불완전 · 재요청 가능 · 마이크 분석 계속");
+   if(!liveRunning||!part2Mode)setTtsStatus(number+"번 음성 파일 불완전 · 재요청 가능");
   }
- }catch(e){setTtsStatus(number+"번 음성 출력 사전 준비 실패 · 필요 시 직접 생성: "+String(e))}
+ }catch(e){if(!liveRunning||!part2Mode)setTtsStatus(number+"번 음성 출력 사전 준비 실패: "+String(e))}
  finally{preparingAnswers.delete(number)}
 }
 let part2AudioBusy=false;
