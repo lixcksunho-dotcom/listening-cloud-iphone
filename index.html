@@ -157,6 +157,17 @@ async function playPart2AudioQueue(){
     if(buffer){
      setTtsStatus(spoken+" · 사전 준비된 음성 즉시 재생");
     }else{
+     if(id.startsWith("preview-")){
+      setTtsStatus(spoken+" · 음성 미리 준비 실패 · iPhone 자체 음성으로 대체");
+      if(!("speechSynthesis" in window))throw Error("한국어 음성 재생 미지원");
+      await new Promise((resolve,reject)=>{
+       const u=new SpeechSynthesisUtterance(spoken);
+       u.lang="ko-KR";u.rate=1.3;
+       u.onend=resolve;u.onerror=e=>reject(Error(e.error||"synthesis_error"));
+       try{speechSynthesis.speak(u)}catch(e){reject(e)}
+      });
+      continue;
+     }
      setTtsStatus(spoken+" · 사전 준비 음성 없음 · 서버 음성 요청");
      const response=await authed(API+"?action=speak-answer",{
       method:"POST",headers:{"Content-Type":"application/json"},
@@ -212,6 +223,36 @@ const PART2_PREVIEW_INTERVAL_MS=2300;
 let part2PreviewInFlight=false,part2PreviewAt=0,part2PreviewEpoch=0,part2ForcedPreviewAt=0;
 let part2Candidate=null,part2LastSpeechAt=0,part2LatestPreviewAt=0;
 const part2AnnouncedChunks=new Set();
+const part2AnnouncedNumbers=new Set();
+const PART2_OVERLAP_SECONDS=14;
+// Keep the start of the NEXT question when a solved item overlaps its successor.
+// Unlike resetVAD(), this retains microphone samples rather than deleting them.
+function part2KeepRecentAudio(){
+ const keep=Math.round(liveRate*PART2_OVERLAP_SECONDS);
+ let count=0;const tail=[];
+ for(let i=liveSamples.length-1;i>=0&&count<keep;i--){
+  const frame=liveSamples[i];
+  if(count+frame.length<=keep){tail.unshift(frame);count+=frame.length}
+  else{
+   const need=keep-count;
+   tail.unshift(frame.slice(frame.length-need));count+=need;
+  }
+ }
+ liveSamples=tail;liveFrameCount=count;
+ part2PreviewEpoch++;
+ part2Candidate=null;part2PreviewInFlight=false;part2ForcedPreviewAt=0;
+ part2PreviewAt=0;part2LatestPreviewAt=0;
+ vadSilent=0;vadVoiced=0;vadTalking=true;
+}
+function part2ArchiveWithOverlap(){
+ const saved=liveSamples,frames=liveFrameCount;
+ // flushLiveSamples() clears its source synchronously prior to its first await.
+ void flushLiveSamples();
+ if(liveRunning&&part2Mode){
+  liveSamples=saved;liveFrameCount=frames;
+  part2KeepRecentAudio();
+ }
+}
 function part2ResetStreaming(){
  part2PreviewEpoch++;
  part2Candidate=null;
@@ -243,20 +284,19 @@ async function part2SendPreview(force=false){
   $("part2SpeedStats").textContent="실시간 분석 중 · 인식한 선택지 "+(letters||"대기")+" / "+(result.complete?"정답 후보 준비":"계속 듣는 중");
   if(result.complete&&/^[ABC]$/.test(result.answer||"")){
    const number=Number(result.question_number)||part2ExpectedNumber;
-   if(number!==part2ExpectedNumber)return;
+   if(number!==part2ExpectedNumber||part2AnnouncedNumbers.has(number))return;
    part2Candidate={number,letter:result.answer,previewedSeconds:size/rate,at:performance.now()};
    if(result.following_question_started){
     // The next question is already underway; report the late result rather than
     // holding question 7 until the end of question 8.
     const spoken=number+"번 "+result.answer;
-    const nextId=liveSessionId+"_"+String(liveChunkNum+1).padStart(5,"0");
-    part2AnnouncedChunks.add(nextId);
-    queuePart2Audio("preview-"+nextId,spoken);
+    if(part2AnnouncedNumbers.has(number))return;
+    part2AnnouncedNumbers.add(number);
+    queuePart2Audio("preview-"+liveSessionId+"-"+number,spoken);
     part2ExpectedNumber=number+1;
-    void preparePart2AnswerClips(number+1);
-    liveMessage(spoken+" · 다음 문항이 이미 시작되어 늦게 안내됨");
-    void flushLiveSamples();
-    part2ResetStreaming();
+    if(number<200)void preparePart2AnswerClips(number+1);
+    liveMessage(spoken+" · 다음 문항 시작 감지, 앞부분을 유지하며 분석 계속");
+    part2KeepRecentAudio();
    }else part2MaybeAnnounce();
   }
  }catch(error){
@@ -275,15 +315,14 @@ function part2MaybeAnnounce(){
  if(secondsCaptured-part2Candidate.previewedSeconds>2.4)return;
  const {number,letter}=part2Candidate;
  const spoken=number+"번 "+letter;
- const nextId=liveSessionId+"_"+String(liveChunkNum+1).padStart(5,"0");
- part2AnnouncedChunks.add(nextId);
- // Mic continues capturing. Cached Korean audio can start immediately.
- queuePart2Audio("preview-"+nextId,spoken);
+ if(part2AnnouncedNumbers.has(number))return;
+ part2AnnouncedNumbers.add(number);
+ // Mic continues capturing. No reset/flush that can delete question 8's start.
+ queuePart2Audio("preview-"+liveSessionId+"-"+number,spoken);
  part2ExpectedNumber=number+1;
- if(liveRunning&&number+1<=200)void preparePart2AnswerClips(number+1);
- liveMessage("✓ C 선택지 종료 감지 · "+spoken+" 음성 안내");
- void flushLiveSamples();
- part2ResetStreaming();
+ if(liveRunning&&number<200)void preparePart2AnswerClips(number+1);
+ liveMessage("✓ C 선택지 종료 감지 · "+spoken+" · 다음 번호 연속 분석");
+ part2KeepRecentAudio();
 }
 const PART2_MIN_SECONDS=2.75;
 const PART2_MAX_SECONDS=27;
@@ -411,15 +450,15 @@ function appendLiveInterpretation(job){
  liveTextSeen.add(job.client_chunk_id);
  if(job.analysis_mode==="part2_answer"&&!part2AnnouncedChunks.has(job.client_chunk_id)){
   const heard=detectSpokenQuestionNumber(job.transcript||"");
-  if(heard&&Number.isFinite(heard))part2ExpectedNumber=heard;
+  if(heard&&Number.isFinite(heard)&&heard>=part2ExpectedNumber)part2ExpectedNumber=heard;
  }
  const renderedAnswer=job.analysis_mode==="part2_answer"?compactPart2Result(job):job.korean_interpretation;
  const ready=part2AnswerIsReady(job);
  if(job.analysis_mode==="part2_answer"&&ready&&!part2AnnouncedChunks.has(job.client_chunk_id)){
    const n=renderedAnswer.match(/^(\d{1,3})번 [ABC]$/);
-   if(n){
+   if(n&&Number(n[1])>=part2ExpectedNumber){
     part2ExpectedNumber=Number(n[1])+1;
-    if(liveRunning)void preparePart2AnswerClips(part2ExpectedNumber+1);
+    if(liveRunning&&part2ExpectedNumber<=200)void preparePart2AnswerClips(part2ExpectedNumber);
    }
  }
  const panel=$("liveTranscript");
@@ -428,10 +467,13 @@ function appendLiveInterpretation(job){
  const english=document.createElement("div");english.textContent="EN  "+job.transcript;
  const korean=document.createElement("div");korean.style.fontWeight="bold";korean.textContent=(job.analysis_mode==="part2_answer"?"Part 2 AI 판단  ":job.analysis_mode==="question_summary"||questionMode?"한국어 핵심 요약  ":"KO  ")+(renderedAnswer||"한국어 분석 대기 또는 실패");
  card.append(english,korean);panel.append(card);
- if(liveRunning&&ready&&!part2AnnouncedChunks.has(job.client_chunk_id)&&job.korean_interpretation&&$("speakKorean").checked&&(!liveTextMode||voiceMode)&&(!voiceMode||liveRunning)&&numberGateForChunk(job)&&!alreadySpoken.has(job.client_chunk_id)){
+ if(liveRunning&&ready&&!part2AnnouncedNumbers.has(Number((renderedAnswer||"").match(/^(\d+)/)?.[1]||0))&&!part2AnnouncedChunks.has(job.client_chunk_id)&&job.korean_interpretation&&$("speakKorean").checked&&(!liveTextMode||voiceMode)&&(!voiceMode||liveRunning)&&numberGateForChunk(job)&&!alreadySpoken.has(job.client_chunk_id)){
   alreadySpoken.add(job.client_chunk_id);
-  if(job.analysis_mode==="part2_answer")queuePart2Audio(job.id,renderedAnswer);
-  else{speechQueue.push(renderedAnswer);speakNext();}
+  if(job.analysis_mode==="part2_answer"){
+   const n=Number(renderedAnswer.match(/^(\d+)/)?.[1]||0);
+   if(n)part2AnnouncedNumbers.add(n);
+   queuePart2Audio(job.id,renderedAnswer);
+  }else{speechQueue.push(renderedAnswer);speakNext();}
  }
 }
 const liveTextSeen=new Set();
@@ -540,9 +582,8 @@ function captureAudioFrame(event){
       }
       // Fail-safe for long directions or missed delimiters: preserve full raw audio.
       if(liveFrameCount>=liveRate*PART2_MAX_SECONDS){
-       void flushLiveSamples();
-       part2ResetStreaming();
-       liveMessage("긴 오디오 구간 저장 · 다음 문항 계속 듣는 중");
+       part2ArchiveWithOverlap();
+       liveMessage("긴 녹음 기록 저장 · 최근 14초 유지하며 다음 문항 계속 분석");
       }
       return;
     }
@@ -675,7 +716,7 @@ $("liveStart").onclick=async()=>{
   const status=await authed(API+"?action=key-status");const k=await status.json();
   if(!k.configured){liveMessage("이 세션에 AI 키가 연결되지 않았습니다. 자동 연결 상태를 확인하세요.");return}
   // Select voice mode before configuring the iPhone microphone.
-  voiceMode=selectedMode()==="voice";part2Mode=selectedMode()==="part2";part2ExpectedNumber=Number($("part2Start").value)||7;part2ResetStreaming();numberDetected=false;detectedQuestionNumber=null;alreadySpoken.clear();speechQueue.length=0;
+  voiceMode=selectedMode()==="voice";part2Mode=selectedMode()==="part2";part2ExpectedNumber=Number($("part2Start").value)||7;part2AnnouncedNumbers.clear();part2AnnouncedChunks.clear();part2ResetStreaming();numberDetected=false;detectedQuestionNumber=null;alreadySpoken.clear();speechQueue.length=0;
   liveRunning=true;
   await acquireLiveMicrophone();
   liveTextMode=selectedMode()==="live"||voiceMode;
