@@ -1,4 +1,4 @@
-<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta name="theme-color" content="#132640"><title>Listening Cloud</title><style>body{font-family:-apple-system,BlinkMacSystemFont,system-ui;background:#f3f6fb;color:#142943;max-width:650px;margin:auto;padding:20px}header{background:#142943;color:white;border-radius:18px;padding:24px}h1{font-size:24px;margin:4px 0}h2{font-size:17px}section{background:white;border-radius:17px;padding:20px;margin-top:16px;box-shadow:0 1px 5px #ccd4e040}input,button{box-sizing:border-box;width:100%;padding:13px;margin-top:8px;border-radius:11px;font-size:15px}input{border:1px solid #bec9d9}button{border:0;background:#275ee8;color:white;font-weight:700}button.secondary{background:#e8eef9;color:#142943}button:disabled{opacity:.5}#clock{font-size:39px;font-weight:800;margin:16px}#state{font-weight:600;color:#245bcb}small{color:#687a92;line-height:1.5}article{border-top:1px solid #e5e9ef;padding:14px 0;white-space:pre-wrap;overflow-wrap:anywhere}#work{display:none}#auth,#logout{display:none!important}#msg{white-space:pre-wrap;background:#fff5da;border-radius:10px;padding:12px;margin-top:12px}</style></head><body><header><small style="color:#b5c8ea">HTTPS · PRIVATE AUDIO</small><h1>Listening Cloud</h1><div>아이폰 영어 듣기 · 연속 녹음 · 안전한 임시 보관</div></header><div id="msg">로그인 없이 바로 녹음할 수 있습니다. 게스트 연결을 준비 중입니다.</div><section id="auth"><h2>계정 로그인</h2><input id="email" autocomplete="email" type="email" placeholder="이메일"><input id="password" type="password" autocomplete="current-password" placeholder="비밀번호 (6자 이상)"><button id="login">로그인</button><button id="signup" class="secondary">처음 사용: 계정 만들기</button><small>가입 시 이메일 인증이 필요할 수 있습니다. 인증 메일을 확인하세요.</small></section><div id="work"><section id="ownerStatusPanel"><h2>클라우드 AI 연결</h2><div id="ownerStatus">연결 확인 중...</div><small>연결이 끝나면 API 키 입력 없이 영어 음성을 인식합니다. 이 Safari에서 다시 열어도 연결을 유지합니다.</small></section><section id="keypanel" style="display:none"><h2>🔑 OpenAI API 키 연결</h2><small>발급받은 OpenAI API 키를 여기에 입력하세요. 서버로 암호화 저장되며 다른 사용자에게 공개되지 않습니다. ChatGPT에 키를 보내지 않아도 됩니다.</small><input type="password" id="openaiKey" placeholder="sk-proj-..." autocomplete="off" autocapitalize="off" spellcheck="false"><button id="saveKey">API 키 안전하게 저장</button><button id="showKey" class="secondary" type="button">입력값 보기 / 가리기</button><div id="keyStatus" aria-live="polite">연결 상태 확인 중...</div><small>이 게스트 세션에만 연결됩니다. 브라우저 데이터를 지우면 해당 세션에 다시 접근하지 못할 수 있습니다. 키 등록 후 ‘녹음 시작’을 눌러주세요.</small><div id="recoveryCodeArea" style="display:none;border:1px solid #cbd5e1;border-radius:12px;padding:12px;background:#f0f7ff"><strong>API 키 복구 코드 (한 번만 보관)</strong><p id="recoveryCode" style="overflow-wrap:anywhere;font-size:12px"></p><button id="copyRecovery" class="secondary" type="button">복구 코드 복사</button><small>새 브라우저나 초기화한 기기에서 키를 다시 입력하지 않고 연결할 수 있어요. 복구 코드는 비밀번호처럼 안전하게 보관하세요.</small></div><details><summary>다른 세션에서 API 키 복구하기</summary><input type="password" id="recoveryInput" placeholder="lc_로 시작하는 복구 코드" autocomplete="off"><button id="recoverKey" type="button" class="secondary">기존 API 키 연결 복구</button></details><button id="removeKey" class="secondary" type="button">저장된 키 연결 해제</button></section><section><h2>스피커 영어 음원 녹음</h2><div id="state">녹음 대기</div><div id="clock">00:00</div><button id="liveStart" style="background:#178461">무음 감지 · 영어 분석 · 한국어 음성 시작</button><button id="liveStop" class="secondary" disabled>실시간 인식 종료</button><div id="liveStatus" aria-live="polite">준비됨 · 영어가 끝나면 무음을 감지해 분석합니다.</div><label for="inputLevel" style="display:block;margin-top:8px;font-weight:600">마이크 입력 확인</label><progress id="inputLevel" max="100" value="0" style="width:100%;height:18px"></progress><div id="micDiag" style="font-size:12px;color:#385877">마이크 연결 진단 대기 중</div><button id="micTest" class="secondary" type="button">마이크 자체 테스트 (4초 녹음 · 직접 들어보기)</button><audio id="micTestPlayer" controls playsinline style="width:100%;display:none"></audio><small id="inputDebug">녹음 시작 후 마이크 입력 수치를 확인하세요.</small><button id="forceInterpret" class="secondary" disabled>현재 영어 구간 바로 해석</button><label style="display:block;margin:12px 0"><input id="speakKorean" type="checkbox" checked style="width:auto;margin-right:8px">한국어 해석을 자동으로 음성 안내</label><label>음성 민감도 <select id="voiceSensitivity" style="padding:8px;border-radius:8px"><option value="0.0025">높음</option><option value="0.005" selected>보통</option><option value="0.012">낮음</option></select></label><small>말이 끝난 뒤 약 0.9초 무음이면 전송합니다. 분석 완료에는 추가 시간이 소요됩니다.</small><div id="liveTranscript" style="white-space:pre-wrap;line-height:1.7;border:1px solid #dbe4ed;border-radius:12px;padding:12px;min-height:60px">아직 인식된 문장이 없습니다.</div><small>동시 녹음·클라우드 전사입니다. 약 12초마다 전송하므로 실제 문장은 네트워크 및 분석 시간만큼 늦게 나타납니다. 마이크는 연속으로 켜져 있습니다. 현재 서버는 최근 24시간 최대 120구간으로 제한합니다.</small><details><summary>기존 녹음 후 전송 방식</summary><button id="start">연속 녹음 시작</button><button id="stop" disabled class="secondary">녹음 종료 · 클라우드 전송</button></details><small>앱을 전면에 유지하세요. iOS 화면 잠금이나 다른 앱으로 전환하면 녹음이 중단될 수 있습니다. 저장된 녹음은 IndexedDB에서 자동 재전송을 시도합니다. 녹음 중 주변 사람의 동의를 받으세요.</small></section><section><h2>보관된 녹음</h2><div id="pending"></div><button id="retry" class="secondary">보관된 녹음 다시 전송</button></section><section><h2>영어 인식 결과</h2><button id="refresh" class="secondary">결과 새로고침</button><button id="retryCloud" class="secondary">대기 중인 녹음 다시 전사</button><div id="results"></div></section><section><button id="logout" class="secondary">로그아웃</button></section></div><script>
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta name="theme-color" content="#132640"><title>Listening Cloud</title><style>body{font-family:-apple-system,BlinkMacSystemFont,system-ui;background:#f3f6fb;color:#142943;max-width:650px;margin:auto;padding:20px}header{background:#142943;color:white;border-radius:18px;padding:24px}h1{font-size:24px;margin:4px 0}h2{font-size:17px}section{background:white;border-radius:17px;padding:20px;margin-top:16px;box-shadow:0 1px 5px #ccd4e040}input,button{box-sizing:border-box;width:100%;padding:13px;margin-top:8px;border-radius:11px;font-size:15px}input{border:1px solid #bec9d9}button{border:0;background:#275ee8;color:white;font-weight:700}button.secondary{background:#e8eef9;color:#142943}button:disabled{opacity:.5}#clock{font-size:39px;font-weight:800;margin:16px}#state{font-weight:600;color:#245bcb}small{color:#687a92;line-height:1.5}article{border-top:1px solid #e5e9ef;padding:14px 0;white-space:pre-wrap;overflow-wrap:anywhere}#work{display:none}#auth,#logout{display:none!important}#msg{white-space:pre-wrap;background:#fff5da;border-radius:10px;padding:12px;margin-top:12px}</style></head><body><header><small style="color:#b5c8ea">HTTPS · PRIVATE AUDIO</small><h1>Listening Cloud</h1><div>아이폰 영어 듣기 · 연속 녹음 · 안전한 임시 보관</div></header><div id="msg">로그인 없이 바로 녹음할 수 있습니다. 게스트 연결을 준비 중입니다.</div><section id="auth"><h2>계정 로그인</h2><input id="email" autocomplete="email" type="email" placeholder="이메일"><input id="password" type="password" autocomplete="current-password" placeholder="비밀번호 (6자 이상)"><button id="login">로그인</button><button id="signup" class="secondary">처음 사용: 계정 만들기</button><small>가입 시 이메일 인증이 필요할 수 있습니다. 인증 메일을 확인하세요.</small></section><div id="work"><section id="ownerStatusPanel"><h2>클라우드 AI 연결</h2><div id="ownerStatus">연결 확인 중...</div><small>연결이 끝나면 API 키 입력 없이 영어 음성을 인식합니다. 이 Safari에서 다시 열어도 연결을 유지합니다.</small></section><section id="keypanel" style="display:none"><h2>🔑 OpenAI API 키 연결</h2><small>발급받은 OpenAI API 키를 여기에 입력하세요. 서버로 암호화 저장되며 다른 사용자에게 공개되지 않습니다. ChatGPT에 키를 보내지 않아도 됩니다.</small><input type="password" id="openaiKey" placeholder="sk-proj-..." autocomplete="off" autocapitalize="off" spellcheck="false"><button id="saveKey">API 키 안전하게 저장</button><button id="showKey" class="secondary" type="button">입력값 보기 / 가리기</button><div id="keyStatus" aria-live="polite">연결 상태 확인 중...</div><small>이 게스트 세션에만 연결됩니다. 브라우저 데이터를 지우면 해당 세션에 다시 접근하지 못할 수 있습니다. 키 등록 후 ‘녹음 시작’을 눌러주세요.</small><div id="recoveryCodeArea" style="display:none;border:1px solid #cbd5e1;border-radius:12px;padding:12px;background:#f0f7ff"><strong>API 키 복구 코드 (한 번만 보관)</strong><p id="recoveryCode" style="overflow-wrap:anywhere;font-size:12px"></p><button id="copyRecovery" class="secondary" type="button">복구 코드 복사</button><small>새 브라우저나 초기화한 기기에서 키를 다시 입력하지 않고 연결할 수 있어요. 복구 코드는 비밀번호처럼 안전하게 보관하세요.</small></div><details><summary>다른 세션에서 API 키 복구하기</summary><input type="password" id="recoveryInput" placeholder="lc_로 시작하는 복구 코드" autocomplete="off"><button id="recoverKey" type="button" class="secondary">기존 API 키 연결 복구</button></details><button id="removeKey" class="secondary" type="button">저장된 키 연결 해제</button></section><section><h2>스피커 영어 음원 녹음</h2><div id="state">녹음 대기</div><div id="clock">00:00</div><label style="display:block;font-weight:700;margin-bottom:8px">영어 인식 방식</label><select id="captureMode" style="width:100%;padding:12px;border-radius:10px;border:1px solid #cad6e4;margin-bottom:10px"><option value="live" selected>실시간 텍스트 · 말하는 중에도 5초마다 인식</option><option value="vad">문장이 끝나고 무음 감지 후 인식</option></select><button id="liveStart" style="background:#178461">영어 실시간 자막 + 한국어 해석 시작</button><button id="liveStop" class="secondary" disabled>실시간 인식 종료</button><div id="liveStatus" aria-live="polite">준비됨 · 영어가 끝나면 무음을 감지해 분석합니다.</div><label for="inputLevel" style="display:block;margin-top:8px;font-weight:600">마이크 입력 확인</label><progress id="inputLevel" max="100" value="0" style="width:100%;height:18px"></progress><div id="micDiag" style="font-size:12px;color:#385877">마이크 연결 진단 대기 중</div><button id="micTest" class="secondary" type="button">마이크 자체 테스트 (4초 녹음 · 직접 들어보기)</button><audio id="micTestPlayer" controls playsinline style="width:100%;display:none"></audio><small id="inputDebug">녹음 시작 후 마이크 입력 수치를 확인하세요.</small><button id="forceInterpret" class="secondary" disabled>현재 영어 구간 바로 해석</button><label style="display:block;margin:12px 0"><input id="speakKorean" type="checkbox" style="width:auto;margin-right:8px">한국어 해석 음성 안내 (무음 감지 모드에서 사용)</label><label>음성 민감도 <select id="voiceSensitivity" style="padding:8px;border-radius:8px"><option value="0.0025">높음</option><option value="0.005" selected>보통</option><option value="0.012">낮음</option></select></label><small>실시간 텍스트 모드는 약 5초 단위로 영어 음성을 전송해 영어 원문과 한국어 번역을 화면에 표시합니다. 무음 감지 모드도 선택할 수 있습니다. 클라우드 처리 시간이 추가로 소요됩니다.</small><div id="liveTranscript" style="white-space:pre-wrap;line-height:1.7;border:1px solid #dbe4ed;border-radius:12px;padding:12px;min-height:60px">아직 인식된 문장이 없습니다.</div><small>동시 녹음·클라우드 전사입니다. 약 12초마다 전송하므로 실제 문장은 네트워크 및 분석 시간만큼 늦게 나타납니다. 마이크는 연속으로 켜져 있습니다. 현재 서버는 최근 24시간 최대 120구간으로 제한합니다.</small><details><summary>기존 녹음 후 전송 방식</summary><button id="start">연속 녹음 시작</button><button id="stop" disabled class="secondary">녹음 종료 · 클라우드 전송</button></details><small>앱을 전면에 유지하세요. iOS 화면 잠금이나 다른 앱으로 전환하면 녹음이 중단될 수 있습니다. 저장된 녹음은 IndexedDB에서 자동 재전송을 시도합니다. 녹음 중 주변 사람의 동의를 받으세요.</small></section><section><h2>보관된 녹음</h2><div id="pending"></div><button id="retry" class="secondary">보관된 녹음 다시 전송</button></section><section><h2>영어 인식 결과</h2><button id="refresh" class="secondary">결과 새로고침</button><button id="retryCloud" class="secondary">대기 중인 녹음 다시 전사</button><div id="results"></div></section><section><button id="logout" class="secondary">로그아웃</button></section></div><script>
 const BASE="https://iufsbynxhztirmiccmjn.supabase.co";
 const KEY="sb_publishable_eufD__fKmYJUU1u4AQqwHg_Be45WTXV";
 const API=BASE+"/functions/v1/listening-guest";
@@ -90,6 +90,12 @@ let micCaptureGeneration=0,micRecovering=false,micFramesSeen=0,micLastRms=0;
 function micDiagnostic(text){const el=$("micDiag");if(el)el.textContent=text;}
 let liveRunning=false,liveSamples=[],liveFrameCount=0,liveRate=0,liveStarted=0,liveTimer=null,liveChunkNum=0;
 const VAD_SILENCE=0.85,VAD_MAX=14,VAD_MIN_SPEECH=0.32;
+const LIVE_TEXT_WINDOW=5;
+let liveTextMode=true, liveWindowPeak=0,liveWindowEnergy=0,liveWindowFrames=0,liveDisplayed=0;
+function selectedMode(){return $("captureMode").value;}
+function resetLiveWindow(){liveWindowPeak=0;liveWindowEnergy=0;liveWindowFrames=0;}
+function liveUiText(text){const el=$("liveStatus");if(el)el.textContent=text;}
+
 let noiseRms=0.002,vadPeak=0,vadRms=0,lastAudioTick=0,lastVadMeter=0, audioDeviceWarning=false;
 let vadLastHigh=0;
 function liveMeter(rms,threshold){
@@ -125,9 +131,9 @@ function appendLiveInterpretation(job){
  if(liveTextSeen.size===1)panel.textContent="";
  const card=document.createElement("div");card.style.cssText="padding:10px 0;border-bottom:1px solid #ddd";
  const english=document.createElement("div");english.textContent="EN  "+job.transcript;
- const korean=document.createElement("div");korean.style.fontWeight="bold";korean.textContent="KO  "+(job.korean_interpretation||"한국어 번역 처리 실패");
+ const korean=document.createElement("div");korean.style.fontWeight="bold";korean.textContent="KO  "+(job.korean_interpretation||"한국어 번역 대기 또는 실패");
  card.append(english,korean);panel.append(card);
- if(job.korean_interpretation&&$("speakKorean").checked&&!alreadySpoken.has(job.client_chunk_id)){
+ if(job.korean_interpretation&&$("speakKorean").checked&&!liveTextMode&&!alreadySpoken.has(job.client_chunk_id)){
   alreadySpoken.add(job.client_chunk_id);speechQueue.push(job.korean_interpretation);speakNext();
  }
 }
@@ -175,8 +181,9 @@ async function stopLive(){
  if(liveStream)liveStream.getTracks().forEach(t=>t.stop());
  if(liveCtx){await liveCtx.close().catch(()=>{});}
  liveNode=null;liveSource=null;liveSilent=null;liveCtx=null;liveStream=null;
- if(vadTalking&&liveFrameCount>=liveRate*0.65)await flushLiveSamples();else{liveSamples=[];liveFrameCount=0;}
- resetVAD();$("liveStart").disabled=false;$("liveStop").disabled=true;$("forceInterpret").disabled=true;
+ if((liveTextMode||vadTalking)&&liveFrameCount>=liveRate*0.60)await flushLiveSamples();
+ else{liveSamples=[];liveFrameCount=0;}
+ resetVAD();$("liveStart").disabled=false;$("liveStop").disabled=true;$("forceInterpret").disabled=true;$("captureMode").disabled=false;
  liveMessage("실시간 녹음 종료 · 남은 구간의 전사와 해석을 완료합니다.");
  await refresh();
 }
@@ -196,6 +203,25 @@ function captureAudioFrame(event){
     const endThreshold=Math.max(minThreshold*0.7,noiseRms*1.5);
     const talking=rms>=(vadTalking?endThreshold:startThreshold);
     if(Date.now()-lastVadMeter>250){lastVadMeter=Date.now();liveMeter(rms,vadTalking?endThreshold:startThreshold)}
+    if(liveTextMode){
+      // Continuous microphone, fixed-length independent WAV files, no VAD gate.
+      liveSamples.push(chunk);liveFrameCount+=chunk.length;
+      liveWindowPeak=Math.max(liveWindowPeak,peak);
+      liveWindowEnergy+=power;liveWindowFrames+=chunk.length;
+      if(liveFrameCount>=liveRate*LIVE_TEXT_WINDOW){
+        const windowRms=Math.sqrt(liveWindowEnergy/Math.max(1,liveWindowFrames));
+        // Skip clearly silent/no-input windows without discarding spoken segments.
+        if(windowRms>=0.0007||liveWindowPeak>=0.006){
+          void flushLiveSamples();
+          liveUiText("● 영어 수집 중 · 5초 음원 전송 · 화면에서 결과 확인");
+        }else{
+          liveSamples=[];liveFrameCount=0;
+          liveUiText("마이크 입력이 매우 작음 · 스피커를 가깝게 하거나 iPhone 마이크 테스트 확인");
+        }
+        resetLiveWindow();
+      }
+      return;
+    }
     if(!vadTalking){
       vadPreroll.push(chunk);vadPreSamples+=chunk.length;
       while(vadPreSamples>liveRate*0.35&&vadPreroll.length>1)vadPreSamples-=vadPreroll.shift().length;
@@ -292,12 +318,17 @@ $("liveStart").onclick=async()=>{
   // Start the mic only after user pressed the button.
   liveRunning=true;
   await acquireLiveMicrophone();
-  resetVAD();noiseRms=0.002;vadPreroll=[];vadPreSamples=0;lastAudioTick=Date.now();lastVadMeter=0;audioDeviceWarning=false;liveStarted=Date.now();liveChunkNum=0;liveSessionId="live"+Date.now().toString(36)+crypto.randomUUID().replaceAll("-","").slice(0,12);liveRunning=true;liveTextSeen.clear();
-  $("liveTranscript").textContent="영어가 끝나길 기다리는 중...";
+  liveTextMode=selectedMode()==="live";resetLiveWindow();resetVAD();noiseRms=0.002;vadPreroll=[];vadPreSamples=0;lastAudioTick=Date.now();lastVadMeter=0;audioDeviceWarning=false;liveStarted=Date.now();liveChunkNum=0;liveSessionId="live"+Date.now().toString(36)+crypto.randomUUID().replaceAll("-","").slice(0,12);liveRunning=true;liveTextSeen.clear();
+  $("liveTranscript").textContent=liveTextMode?"영어를 듣고 있습니다. 첫 자막은 약 5초 녹음 + 클라우드 처리 후 나타납니다.":"영어가 끝나길 기다리는 중...";
   // IMPORTANT (iOS WebKit): do not call speechSynthesis while the microphone is open.
   // On affected iOS versions even a silent utterance can mute the mic for the whole session.
   $("liveStart").disabled=true;$("liveStop").disabled=false;$("forceInterpret").disabled=false;
-  liveMessage("● 마이크 연속 녹음 중 · 무음 구간 자동 분석");
+  if(liveTextMode&&$("speakKorean").checked){
+    $("speakKorean").checked=false;
+    micDiagnostic("실시간 텍스트 모드에서는 연속 마이크 수집을 위해 음성 읽기를 기본 해제했습니다. 필요 시 다시 켤 수 있습니다.");
+  }
+  $("captureMode").disabled=true;
+  liveMessage(liveTextMode?"● 실시간 텍스트 중 · 5초마다 영어 원문/한국어 해석 생성":"● 마이크 연속 녹음 중 · 무음 구간 자동 분석");
   liveTimer=setInterval(async()=>{
    if(!liveRunning)return;
    const sec=Math.round((Date.now()-liveStarted)/1000);
@@ -319,7 +350,7 @@ $("liveStart").onclick=async()=>{
 $("liveStop").onclick=()=>void stopLive();
 $("forceInterpret").onclick=()=>{
  if(!liveRunning)return;
- if(vadTalking&&liveFrameCount>liveRate*0.5){void flushLiveSamples();resetVAD();vadPreroll=[];vadPreSamples=0;liveMessage("수동 구간 확정 · 전사/한국어 해석 중...")}
+ if((liveTextMode||vadTalking)&&liveFrameCount>liveRate*0.5){void flushLiveSamples();resetVAD();resetLiveWindow();vadPreroll=[];vadPreSamples=0;liveMessage("현재 음원 바로 전송 · 영어 원문과 한국어 해석 중...")}
  else liveMessage("분석할 영어 음성이 아직 감지되지 않았습니다. 마이크 입력 표시를 확인하세요.");
 };
 document.addEventListener("visibilitychange",()=>{
