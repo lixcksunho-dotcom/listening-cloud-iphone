@@ -118,20 +118,36 @@ const PART2_SILENCE_SECONDS=2.5;
 const PART2_MIN_SECONDS=9;
 const PART2_MAX_SECONDS=30;
 let part2Mode=false;
+let part2ExpectedNumber=7;
+function part2QuestionComplete(transcript){
+ if(!transcript)return false;
+ const labels=[...transcript.matchAll(/(?:^|[\s\n])([ABC])[.)](?=\s)/gi)];
+ if(labels.map(m=>m[1].toUpperCase()).join("")!=="ABC")return false;
+ const q=transcript.slice(0,labels[0].index).trim();
+ if(q.split(/\s+/).filter(Boolean).length<4)return false;
+ if(/for each question|answer sheet|select the best response|let us begin with question/i.test(q))return false;
+ return labels.every((m,i)=>{
+  const beginning=m.index+m[0].length;
+  const ending=i<2?labels[i+1].index:transcript.length;
+  return transcript.slice(beginning,ending).trim().split(/\s+/).filter(Boolean).length>=2;
+ });
+}
+function part2AnswerIsReady(job){
+ if(job.analysis_mode!=="part2_answer")return true;
+ if(!part2QuestionComplete(job.transcript))return false;
+ return /^(?:\d{1,3}\s*번\s*[ABC]|번호\s*미확인\s*[ABC])$/i.test((job.korean_interpretation||"").trim());
+}
 function compactPart2Result(job){
  const v=(job.korean_interpretation||"").trim();
  if(job.analysis_mode!=="part2_answer")return v;
- if(v==="정답 확인 불가")return v;
+ if(!part2AnswerIsReady(job))return "문항 미완성 · 질문과 A/B/C가 끝나야 정답 안내";
+
  const exact=v.match(/^(\d{1,3})\s*번\s*([ABC])$/i);
  if(exact)return Number(exact[1])+"번 "+exact[2].toUpperCase();
  const fallback=v.match(/^번호\s*미확인\s*([ABC])$/i);
  if(fallback){
-  const m=(job.client_chunk_id||"").match(/_(\d{5})$/);
-  const base=Number($("part2Start").value||7);
-  if(m&&Number.isFinite(base)&&base>=1&&base<=200){
-   const estimated=base+Number(m[1])-1;
-   if(estimated<=200)return estimated+"번 "+fallback[1].toUpperCase();
-  }
+  if(Number.isFinite(part2ExpectedNumber)&&part2ExpectedNumber>=1&&part2ExpectedNumber<=200)
+   return part2ExpectedNumber+"번 "+fallback[1].toUpperCase();
   return "번호 미확인 "+fallback[1].toUpperCase();
  }
  return "정답 확인 불가";
@@ -214,14 +230,24 @@ function replayKoreanSummary(message){
 function appendLiveInterpretation(job){
  if(!job.client_chunk_id?.startsWith(liveSessionId)||!job.transcript||liveTextSeen.has(job.client_chunk_id))return;
  liveTextSeen.add(job.client_chunk_id);
+ if(job.analysis_mode==="part2_answer"){
+  const heard=detectSpokenQuestionNumber(job.transcript||"");
+  if(heard&&Number.isFinite(heard))part2ExpectedNumber=heard;
+ }
+ const renderedAnswer=job.analysis_mode==="part2_answer"?compactPart2Result(job):job.korean_interpretation;
+ const ready=part2AnswerIsReady(job);
+ if(job.analysis_mode==="part2_answer"&&ready){
+   const n=renderedAnswer.match(/^(\d{1,3})번 [ABC]$/);
+   if(n)part2ExpectedNumber=Number(n[1])+1;
+ }
  const panel=$("liveTranscript");
  if(liveTextSeen.size===1)panel.textContent="";
  const card=document.createElement("div");card.style.cssText="padding:10px 0;border-bottom:1px solid #ddd";
  const english=document.createElement("div");english.textContent="EN  "+job.transcript;
- const korean=document.createElement("div");korean.style.fontWeight="bold";korean.textContent=(job.analysis_mode==="part2_answer"?"Part 2 AI 판단  ":job.analysis_mode==="question_summary"||questionMode?"한국어 핵심 요약  ":"KO  ")+(job.analysis_mode==="part2_answer"?compactPart2Result(job):job.korean_interpretation||"한국어 분석 대기 또는 실패");
+ const korean=document.createElement("div");korean.style.fontWeight="bold";korean.textContent=(job.analysis_mode==="part2_answer"?"Part 2 AI 판단  ":job.analysis_mode==="question_summary"||questionMode?"한국어 핵심 요약  ":"KO  ")+(renderedAnswer||"한국어 분석 대기 또는 실패");
  card.append(english,korean);panel.append(card);
- if(liveRunning&&job.korean_interpretation&&$("speakKorean").checked&&(!liveTextMode||voiceMode)&&(!voiceMode||liveRunning)&&numberGateForChunk(job)&&!alreadySpoken.has(job.client_chunk_id)){
-  alreadySpoken.add(job.client_chunk_id);speechQueue.push(job.analysis_mode==="part2_answer"?compactPart2Result(job):job.korean_interpretation);speakNext();
+ if(liveRunning&&ready&&job.korean_interpretation&&$("speakKorean").checked&&(!liveTextMode||voiceMode)&&(!voiceMode||liveRunning)&&numberGateForChunk(job)&&!alreadySpoken.has(job.client_chunk_id)){
+  alreadySpoken.add(job.client_chunk_id);speechQueue.push(renderedAnswer);speakNext();
  }
 }
 const liveTextSeen=new Set();
@@ -416,7 +442,7 @@ $("liveStart").onclick=async()=>{
   const status=await authed(API+"?action=key-status");const k=await status.json();
   if(!k.configured){liveMessage("이 세션에 AI 키가 연결되지 않았습니다. 자동 연결 상태를 확인하세요.");return}
   // Select voice mode before configuring the iPhone microphone.
-  voiceMode=selectedMode()==="voice";part2Mode=selectedMode()==="part2";numberDetected=false;detectedQuestionNumber=null;alreadySpoken.clear();speechQueue.length=0;
+  voiceMode=selectedMode()==="voice";part2Mode=selectedMode()==="part2";part2ExpectedNumber=Number($("part2Start").value)||7;numberDetected=false;detectedQuestionNumber=null;alreadySpoken.clear();speechQueue.length=0;
   liveRunning=true;
   await acquireLiveMicrophone();
   liveTextMode=selectedMode()==="live"||voiceMode;
@@ -562,13 +588,14 @@ async function refresh(){
   if(!r.ok)throw Error("HTTP "+r.status);
   const d=await r.json();
   $("results").replaceChildren();
+  for(const job of [...(d.jobs||[])].reverse())appendLiveInterpretation(job);
   for(const job of d.jobs||[]){
    const a=document.createElement("article");
    const waiting=job.status==="awaiting_configuration";
    const failed=job.status==="error";
    const empty=job.status==="completed"&&!job.transcript;
    const title=waiting?"전사 대기 (키 등록 전 저장)":failed?"전사 오류":empty?"영어 미검출":"전사 완료";
-   const detail=job.transcript?("영어: "+job.transcript+"\n"+(job.analysis_mode==="part2_answer"?"Part 2 AI 예상 답: ":job.analysis_mode==="question_summary"?"한국어 요약: ":"한국어 해석: ")+(job.analysis_mode==="part2_answer"?compactPart2Result(job):job.korean_interpretation||"분석 처리 대기/실패")):job.error_message||(empty?"영어 음성 미검출":"클라우드에 녹음이 보관되어 있습니다.");
+   const detail=job.transcript?("영어: "+job.transcript+"\n"+(job.analysis_mode==="part2_answer"?"Part 2 AI 예상 답: ":job.analysis_mode==="question_summary"?"한국어 요약: ":"한국어 해석: ")+(job.analysis_mode==="part2_answer"?(part2AnswerIsReady(job)?job.korean_interpretation:"미완성 · 질문과 세 선택지가 모두 수집되지 않음"):job.korean_interpretation||"분석 처리 대기/실패")):job.error_message||(empty?"영어 음성 미검출":"클라우드에 녹음이 보관되어 있습니다.");
    a.textContent=new Date(job.created_at).toLocaleString("ko-KR")+" · "+title+"\n"+detail;
    if(job.analysis_mode==="question_summary"){
     const notice=document.createElement("div");
@@ -576,8 +603,7 @@ async function refresh(){
     notice.style.cssText="font-size:12px;color:#62768c;margin:8px 0";
     a.append(notice);
    }
-   appendLiveInterpretation(job);
-   if(job.korean_interpretation){
+   if(job.korean_interpretation&&(job.analysis_mode!=="part2_answer"||part2AnswerIsReady(job))){
     const listen=document.createElement("button");
     listen.textContent=job.analysis_mode==="part2_answer"?"Part 2 정답 설명 듣기":job.analysis_mode==="question_summary"?"한국어 요약 듣기":"한국어 해석 듣기";
     listen.className="secondary";
