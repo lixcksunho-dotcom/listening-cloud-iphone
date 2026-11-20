@@ -179,7 +179,7 @@ function speakNext(){
  const resumeMic=liveRunning&&!voiceMode&&!part2Mode;
  ttsBusy=true;ttsPlaying=true;
  const utterance=new SpeechSynthesisUtterance(message);
- utterance.lang="ko-KR";utterance.rate=1.05;utterance.pitch=1;
+ utterance.lang="ko-KR";utterance.rate=part2Mode?1.3:1.05;utterance.pitch=1;
  const voice=speechSynthesis.getVoices().find(v=>v.lang?.toLowerCase().startsWith("ko"));
  if(voice)utterance.voice=voice;
  setTtsStatus("한국어 요약 음성 준비 중…");
@@ -281,9 +281,14 @@ async function flushLiveSamples(){
  const chunkId=liveSessionId+"_"+String(++liveChunkNum).padStart(5,"0");
  try{
   await store("readwrite",os=>os.put({id:chunkId,blob,mode:part2Mode?"part2_answer":questionMode?"question_summary":"translate",createdAt:Date.now()}));
-  await showPending();
-  liveMessage("오디오 "+liveChunkNum+"구간 저장됨 · 클라우드 전사 중 · 보관 파일 "+Math.round(blob.size/1024)+"KB");
-  void retry();
+  if(part2Mode){
+   liveMessage("문항 종료 · 정답 우선 분석 요청 중");
+   priorityPart2Upload({id:chunkId,blob});
+  }else{
+   await showPending();
+   liveMessage("오디오 "+liveChunkNum+"구간 저장됨 · 클라우드 전사 중 · 보관 파일 "+Math.round(blob.size/1024)+"KB");
+   void retry();
+  }
  }catch(e){liveMessage("이 구간을 기기에 저장하지 못했습니다: "+String(e));}
 }
 async function stopLive(){
@@ -518,8 +523,44 @@ $("start").onclick=async()=>{
 };
 $("stop").onclick=()=>{if(!recorder||recorder.state==="inactive")return;$("stop").disabled=true;$("start").disabled=false;$("state").textContent="녹음 종료 · 저장 중";recorder.stop();};
 async function showPending(){const files=await getPending();$("pending").textContent=files.length+"개 파일 보관 중";return files;}
+const part2FastInFlight=new Set();
+let part2FastTail=Promise.resolve();
+function priorityPart2Upload(file){
+ // Independent high-priority path; do not wait for unrelated uploads or DOM refresh.
+ part2FastInFlight.add(file.id);
+ const started=performance.now();
+ part2FastTail=part2FastTail.catch(()=>{}).then(async()=>{
+  if(!token())throw Error("게스트 세션 미연결");
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),40000);
+  let response;
+  try{
+   response=await authed(API+"?action=upload",{
+    method:"POST",
+    headers:{"Content-Type":"audio/wav","x-client-chunk-id":file.id,"x-analysis-mode":"part2_answer"},
+    body:file.blob,
+    signal:controller.signal
+   });
+  }finally{clearTimeout(timer)}
+  const data=await response.json();
+  if(!response.ok)throw Error("HTTP "+response.status+" "+(data.error||"unknown"));
+  if(data.status==="completed"&&data.transcript){
+   // Announce FIRST, before updating the saved-uploads panel.
+   appendLiveInterpretation({client_chunk_id:file.id,analysis_mode:"part2_answer",transcript:data.transcript,korean_interpretation:data.korean_interpretation});
+   if(part2AnswerIsReady({analysis_mode:"part2_answer",transcript:data.transcript,korean_interpretation:data.korean_interpretation})){
+    const secs=((performance.now()-started)/1000).toFixed(1);
+    setTtsStatus("Part 2 정답 분석 "+secs+"초 · 음성 안내 시도");
+   }
+  }
+  if(["completed","error","awaiting_configuration"].includes(data.status))await store("readwrite",os=>os.delete(file.id));
+  if(data.status!=="completed")liveMessage("Part 2 처리 상태: "+(data.message||data.status||"확인 필요"));
+  void showPending(); // not on critical path
+ }).catch(e=>{
+  liveMessage("Part 2 빠른 전송 실패 · 녹음 보관됨: "+String(e));
+ }).finally(()=>{part2FastInFlight.delete(file.id);});
+}
 async function retry(){
- if(busy||!token())return;busy=true;let failed=false;try{const files=await showPending();for(const f of files){
+ if(busy||!token())return;busy=true;let failed=false;try{const files=await showPending();for(const f of files){if(part2FastInFlight.has(f.id))continue;
   try{
    const mime=(f.blob.type||"audio/mp4").split(";")[0];
    const kb=Math.round(f.blob.size/1024);
