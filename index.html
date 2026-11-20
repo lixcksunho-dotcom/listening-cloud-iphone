@@ -140,6 +140,14 @@ function unlockPart2Output(){
 }
 function queuePart2Audio(id,spoken){
  if(!id||!/^\d{1,3}번 [ABC]$/.test(spoken)){setTtsStatus("정답 음성 파일 요청 불가 · 번호/결과를 확인하세요");return;}
+ const match=spoken.match(/^(\d{1,3})번 ([ABC])$/);
+ const number=Number(match[1]);
+ if(!part2Mode){enqueuePart2AudioRaw(id,spoken);return;}
+ if(number<part2NextAudibleNumber||part2DeliveredNumbers.has(number)||part2ReadyToSpeak.has(number))return;
+ part2ReadyToSpeak.set(number,{id,spoken});
+ part2DrainOrderedAudio();
+}
+function enqueuePart2AudioRaw(id,spoken){
  part2AudioQueue.push({id,spoken});
  void playPart2AudioQueue();
 }
@@ -234,6 +242,33 @@ let part2PreviewInFlight=false,part2PreviewAt=0,part2PreviewEpoch=0,part2ForcedP
 let part2Candidate=null,part2LastSpeechAt=0,part2LatestPreviewAt=0;
 const part2AnnouncedChunks=new Set();
 const part2AnnouncedNumbers=new Set();
+// The AI may finish 8 before 7, but playback must NEVER skip 7.
+// Capture and inference remain independent; this cursor only controls playback order.
+let part2NextAudibleNumber=7;
+const part2ReadyToSpeak=new Map();
+const part2DeliveredNumbers=new Set();
+function part2ResetDelivery(first){
+ part2NextAudibleNumber=first;
+ part2ReadyToSpeak.clear();
+ part2DeliveredNumbers.clear();
+}
+function part2DrainOrderedAudio(){
+ let count=0;
+ while(part2ReadyToSpeak.has(part2NextAudibleNumber)){
+  const next=part2ReadyToSpeak.get(part2NextAudibleNumber);
+  part2ReadyToSpeak.delete(part2NextAudibleNumber);
+  part2DeliveredNumbers.add(part2NextAudibleNumber);
+  enqueuePart2AudioRaw(next.id,next.spoken);
+  part2NextAudibleNumber++;
+  count++;
+ }
+ if(!count&&part2ReadyToSpeak.size&&part2Mode){
+  const pending=Math.min(...part2ReadyToSpeak.keys());
+  if(Number.isFinite(pending)&&pending>part2NextAudibleNumber)
+   setTtsStatus(part2NextAudibleNumber+"번 정답 대기 · "+pending+"번 정답은 보관됨 · 번호순으로 안내");
+ }
+}
+
 const part2QuestionFingerprints=new Map();
 function part2QuestionFingerprint(text){
  if(!text)return "";
@@ -490,14 +525,21 @@ function appendLiveInterpretation(job){
  liveTextSeen.add(job.client_chunk_id);
  if(job.analysis_mode==="part2_answer"&&!part2AnnouncedChunks.has(job.client_chunk_id)){
   const heard=detectSpokenQuestionNumber(job.transcript||"");
-  if(heard&&Number.isFinite(heard)&&heard>=part2ExpectedNumber)part2ExpectedNumber=heard;
+  // Never advance analysis or audible number solely from a detected announcer number.
+  // The numbered answer must first be delivered or safely staged.
  }
  const renderedAnswer=job.analysis_mode==="part2_answer"?compactPart2Result(job):job.korean_interpretation;
  const ready=part2AnswerIsReady(job);
  if(job.analysis_mode==="part2_answer"&&ready&&!part2AnnouncedChunks.has(job.client_chunk_id)){
-   const n=renderedAnswer.match(/^(\d{1,3})번 [ABC]$/);
-   if(n&&Number(n[1])>=part2ExpectedNumber){
-    part2ExpectedNumber=Number(n[1])+1;
+   // Late archive answers may recover an item whose preview was delayed.
+   const n=renderedAnswer.match(/^(\d{1,3})번 ([ABC])$/);
+   if(n){
+    const number=Number(n[1]);
+    if(!part2AnnouncedNumbers.has(number)){
+     part2AnnouncedNumbers.add(number);
+     queuePart2Audio(job.id,number+"번 "+n[2]);
+    }
+    if(number===part2ExpectedNumber)part2ExpectedNumber=number+1;
     if(liveRunning&&part2ExpectedNumber<=200)void preparePart2AnswerClips(part2ExpectedNumber);
    }
  }
@@ -507,7 +549,7 @@ function appendLiveInterpretation(job){
  const english=document.createElement("div");english.textContent="EN  "+job.transcript;
  const korean=document.createElement("div");korean.style.fontWeight="bold";korean.textContent=(job.analysis_mode==="part2_answer"?"Part 2 AI 판단  ":job.analysis_mode==="question_summary"||questionMode?"한국어 핵심 요약  ":"KO  ")+(renderedAnswer||"한국어 분석 대기 또는 실패");
  card.append(english,korean);panel.append(card);
- if(liveRunning&&ready&&!part2AnnouncedNumbers.has(Number((renderedAnswer||"").match(/^(\d+)/)?.[1]||0))&&!part2AnnouncedChunks.has(job.client_chunk_id)&&job.korean_interpretation&&$("speakKorean").checked&&(!liveTextMode||voiceMode)&&(!voiceMode||liveRunning)&&numberGateForChunk(job)&&!alreadySpoken.has(job.client_chunk_id)){
+ if(liveRunning&&job.analysis_mode!=="part2_answer"&&ready&&job.korean_interpretation&&$("speakKorean").checked&&(!liveTextMode||voiceMode)&&(!voiceMode||liveRunning)&&numberGateForChunk(job)&&!alreadySpoken.has(job.client_chunk_id)){
   alreadySpoken.add(job.client_chunk_id);
   if(job.analysis_mode==="part2_answer"){
    const n=Number(renderedAnswer.match(/^(\d+)/)?.[1]||0);
@@ -563,6 +605,7 @@ async function stopLive(){
    if(part2Mode){
     part2PreviewEpoch++;part2Candidate=null;
     part2AudioQueue.length=0;
+    part2ReadyToSpeak.clear();part2DeliveredNumbers.clear();
     try{part2OutputSource?.stop()}catch{}
     part2OutputSource=null;
    }
@@ -758,7 +801,7 @@ $("liveStart").onclick=async()=>{
   const status=await authed(API+"?action=key-status");const k=await status.json();
   if(!k.configured){liveMessage("이 세션에 AI 키가 연결되지 않았습니다. 자동 연결 상태를 확인하세요.");return}
   // Select voice mode before configuring the iPhone microphone.
-  voiceMode=selectedMode()==="voice";part2Mode=selectedMode()==="part2";part2ExpectedNumber=Number($("part2Start").value)||7;part2AnnouncedNumbers.clear();part2AnnouncedChunks.clear();part2QuestionFingerprints.clear();part2ResetStreaming();numberDetected=false;detectedQuestionNumber=null;alreadySpoken.clear();speechQueue.length=0;
+  voiceMode=selectedMode()==="voice";part2Mode=selectedMode()==="part2";part2ExpectedNumber=Number($("part2Start").value)||7;part2AnnouncedNumbers.clear();part2AnnouncedChunks.clear();part2QuestionFingerprints.clear();part2ResetDelivery(part2ExpectedNumber);part2ResetStreaming();numberDetected=false;detectedQuestionNumber=null;alreadySpoken.clear();speechQueue.length=0;
   liveRunning=true;
   await acquireLiveMicrophone();
   liveTextMode=selectedMode()==="live"||voiceMode;
