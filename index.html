@@ -97,10 +97,51 @@ let part2OutputCtx=null,part2OutputSource=null;
 const part2AudioQueue=[];
 const preparedAnswers=new Map();
 const preparingAnswers=new Set();
+const PART2_AUDIO_CACHE_VERSION="v2-20261121";
+function part2CacheKey(number){return "listening-part2-audio-"+PART2_AUDIO_CACHE_VERSION+"-"+number}
+async function decodePart2AudioClips(clips){
+ const ctx=part2OutputCtx;
+ if(!ctx||ctx.state==="closed")return null;
+ const prepared={};
+ await Promise.all(["A","B","C"].map(async letter=>{
+  const encoded=clips?.[letter];
+  if(typeof encoded!=="string"||encoded.length<500)return;
+  const binary=atob(encoded);
+  const arr=new Uint8Array(binary.length);
+  for(let i=0;i<binary.length;i++)arr[i]=binary.charCodeAt(i);
+  const decoded=await ctx.decodeAudioData(arr.buffer);
+  const leadFrames=Math.round(decoded.sampleRate*0.12);
+  const tailFrames=Math.round(decoded.sampleRate*0.08);
+  const padded=ctx.createBuffer(decoded.numberOfChannels,leadFrames+decoded.length+tailFrames,decoded.sampleRate);
+  for(let channel=0;channel<decoded.numberOfChannels;channel++)
+   padded.getChannelData(channel).set(decoded.getChannelData(channel),leadFrames);
+  prepared[letter]=padded;
+ }));
+ return ["A","B","C"].every(letter=>prepared[letter])?prepared:null;
+}
+async function part2LoadCachedAudio(number){
+ if(preparedAnswers.has(number))return true;
+ try{
+  const raw=localStorage.getItem(part2CacheKey(number));
+  if(!raw)return false;
+  const payload=JSON.parse(raw);
+  const prepared=await decodePart2AudioClips(payload);
+  if(!prepared)throw Error("incomplete_cache");
+  preparedAnswers.set(number,prepared);
+  return true;
+ }catch{
+  try{localStorage.removeItem(part2CacheKey(number))}catch{}
+  return false;
+ }
+}
 async function preparePart2AnswerClips(number){
- if(!Number.isInteger(number)||number<1||number>200||preparedAnswers.has(number)||preparingAnswers.has(number)||!token())return;
+ if(!Number.isInteger(number)||number<1||number>200||preparedAnswers.has(number)||preparingAnswers.has(number))return;
  preparingAnswers.add(number);
  try{
+  // Persist generated voice clips locally so reopening the app does not
+  // reintroduce network buffering before answer playback.
+  if(await part2LoadCachedAudio(number))return;
+  if(!token())throw Error("guest_session_unavailable");
   const resp=await authed(API+"?action=prepare-answers",{
    method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number})
   });
@@ -109,30 +150,11 @@ async function preparePart2AnswerClips(number){
    throw Error("음성 준비 HTTP "+resp.status+" "+(err.error||""));
   }
   const payload=await resp.json();
-  const ctx=part2OutputCtx;
-  if(!ctx||ctx.state==="closed")return;
-  const prepared={};
-  await Promise.all(["A","B","C"].map(async letter=>{
-   const encoded=payload.clips?.[letter];
-   if(!encoded)return;
-   const binary=atob(encoded);
-   const arr=new Uint8Array(binary.length);
-   for(let i=0;i<binary.length;i++)arr[i]=binary.charCodeAt(i);
-   const decoded=await ctx.decodeAudioData(arr.buffer);
-   // iOS may discard the very first ~100ms as an audio route wakes up.
-   // Pad short prepared clips rather than asking WebKit to play a 0.35s clip instantly.
-   const leadFrames=Math.round(ctx.sampleRate*0.12);
-   const tailFrames=Math.round(ctx.sampleRate*0.08);
-   const padded=ctx.createBuffer(decoded.numberOfChannels,leadFrames+decoded.length+tailFrames,decoded.sampleRate);
-   for(let channel=0;channel<decoded.numberOfChannels;channel++){
-    padded.getChannelData(channel).set(decoded.getChannelData(channel),leadFrames);
-   }
-   prepared[letter]=padded;
-  }));
-  // A 200 response may still have zero or missing clips. Never cache
-  // an empty/partial preparation as a successful, permanently ready item.
-  if(["A","B","C"].every(letter=>prepared[letter])){
+  const prepared=await decodePart2AudioClips(payload.clips);
+  if(prepared){
    preparedAnswers.set(number,prepared);
+   // Only audio clips are stored: no token, transcription, or credential.
+   try{localStorage.setItem(part2CacheKey(number),JSON.stringify(payload.clips))}catch{}
    // Background prefetch must never overwrite a live answer's playback status.
    if(!liveRunning&&!part2AudioBusy)setTtsStatus(number+"번 선택지 음성 출력 준비 완료");
   }else{
