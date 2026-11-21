@@ -118,7 +118,16 @@ async function preparePart2AnswerClips(number){
    const binary=atob(encoded);
    const arr=new Uint8Array(binary.length);
    for(let i=0;i<binary.length;i++)arr[i]=binary.charCodeAt(i);
-   prepared[letter]=await ctx.decodeAudioData(arr.buffer);
+   const decoded=await ctx.decodeAudioData(arr.buffer);
+   // iOS may discard the very first ~100ms as an audio route wakes up.
+   // Pad short prepared clips rather than asking WebKit to play a 0.35s clip instantly.
+   const leadFrames=Math.round(ctx.sampleRate*0.12);
+   const tailFrames=Math.round(ctx.sampleRate*0.08);
+   const padded=ctx.createBuffer(decoded.numberOfChannels,leadFrames+decoded.length+tailFrames,decoded.sampleRate);
+   for(let channel=0;channel<decoded.numberOfChannels;channel++){
+    padded.getChannelData(channel).set(decoded.getChannelData(channel),leadFrames);
+   }
+   prepared[letter]=padded;
   }));
   // A 200 response may still have zero or missing clips. Never cache
   // an empty/partial preparation as a successful, permanently ready item.
@@ -188,6 +197,7 @@ async function playPart2AudioQueue(){
   while(part2AudioQueue.length){
    const job=part2AudioQueue.shift();
    const {id,spoken}=job;
+   let playbackStarted=false;
    try{
     const ctx=part2PlaybackContext();
     if(!ctx||ctx.state==="closed")throw Error("아이폰 오디오 엔진 없음");
@@ -231,7 +241,13 @@ async function playPart2AudioQueue(){
      }
     }
     // Cached audio must start immediately; do not await a resume on an already running AudioContext.
-    if(ctx.state!=="running")await ctx.resume();
+    if(ctx.state!=="running"){
+     // A resumed iOS audio session may never settle after interruption.
+     await Promise.race([
+      ctx.resume(),
+      new Promise((_,reject)=>setTimeout(()=>reject(Error("오디오 엔진 재개 지연")),1100))
+     ]);
+    }
     if(ctx.state!=="running")throw Error("아이폰 오디오 엔진 정지됨");
     const framesBeforeAudio=micFramesSeen;
     await new Promise((resolve,reject)=>{
@@ -239,7 +255,19 @@ async function playPart2AudioQueue(){
      source.buffer=buffer;
      const louder=ctx.createGain();louder.gain.value=1.45;
      source.connect(louder);louder.connect(ctx.destination);
-     source.onended=()=>{part2OutputSource=null;try{louder.disconnect()}catch{}resolve(null)};
+     let settled=false;
+     const finish=(err)=>{
+      if(settled)return;
+      settled=true;
+      clearTimeout(watchdog);
+      part2OutputSource=null;
+      if(err){try{source.stop()}catch{}}
+      try{source.disconnect();louder.disconnect()}catch{}
+      if(err)reject(err);else resolve(null);
+     };
+     // If Safari suspends the audio graph, onended might never fire.
+     const watchdog=setTimeout(()=>finish(Error("재생 종료 신호 지연 · 오디오 엔진 "+ctx.state)),Math.max(2000,buffer.duration*1000+1300));
+     source.onended=()=>finish(ctx.state==="running"?null:Error("음성 출력 중 오디오 엔진 "+ctx.state));
      try{
       const n=Number(match?.[1]);
       const acceptedAt=part2AnswerReceivedAt.get(n);
@@ -248,13 +276,14 @@ async function playPart2AudioQueue(){
        $("part2SpeedStats").textContent=spoken+" · 정답 확정→오디오 시작 "+queueDelayMs+"ms · 다음 문제 분석 유지";
       }
       setTtsStatus(spoken+" · 기기로 음성 출력 중 · 다음 번호 분석 유지");
-      source.start(0);
+      source.start(ctx.currentTime+0.02);
+      playbackStarted=true;
       if(match){
        part2LastSpoken={number:Number(match[1]),letter:match[2]};
        $("replayPart2Audio").style.display="block";
       }
      }
-     catch(e){part2OutputSource=null;reject(e)}
+     catch(e){finish(e)}
     });
     const framesWhileSpeaking=micFramesSeen-framesBeforeAudio;
     if(liveRunning&&part2Mode){
@@ -265,7 +294,24 @@ async function playPart2AudioQueue(){
     const audioSessionState=navigator.audioSession?.state||"상태 정보 없음";
     setTtsStatus(spoken+" · 오디오 버퍼 전송 종료 · 실제 청취 미확인 (다시 듣기 가능) · 오디오 세션 "+audioSessionState);
    }catch(error){
-    setTtsStatus(spoken+" · 음성 출력 실패: "+String(error)+" · 방금 정답 다시 듣기 버튼을 이용하세요.");
+    // Do not silently lose this numbered answer on an iOS audio-session interruption.
+    // Retry only playback-engine interruptions (not invalid files or other errors).
+    const msg=String(error);
+    const engineFault=/오디오 엔진|재생 종료 신호 지연/i.test(msg);
+    const retries=Number(job.outputRetry||0);
+    if(engineFault&&part2Mode&&liveRunning&&retries<2){
+     part2AudioQueue.unshift({...job,outputRetry:retries+1});
+     setTtsStatus(spoken+" · 출력 경로 복구 "+(retries+1)+"/2 · 다음 영어 분석 계속");
+     setTimeout(()=>{
+      if(liveRunning&&part2Mode){
+       const current=part2PlaybackContext();
+       if(current?.state!=="running")void current?.resume().catch(()=>{});
+       void playPart2AudioQueue();
+      }
+     },260);
+     break;
+    }
+    setTtsStatus(spoken+" · 정답 음성 출력 실패: "+msg+" · 다시 듣기 가능");
     // Avoid running speechSynthesis automatically, which may mute iOS microphone.
    }
   }
