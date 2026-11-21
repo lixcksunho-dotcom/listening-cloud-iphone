@@ -219,11 +219,11 @@ async function playPart2AudioQueue(){
   while(part2AudioQueue.length){
    const job=part2AudioQueue.shift();
    const {id,spoken}=job;
+   const match=spoken.match(/^(\d{1,3})번 ([ABC])$/);
    let playbackStarted=false;
    try{
     const ctx=part2PlaybackContext();
     if(!ctx||ctx.state==="closed")throw Error("아이폰 오디오 엔진 없음");
-    const match=spoken.match(/^(\d{1,3})번 ([ABC])$/);
     let buffer=match?preparedAnswers.get(Number(match[1]))?.[match[2]]:null;
     if(buffer){
      setTtsStatus(spoken+" · 사전 준비된 음성 즉시 재생");
@@ -301,8 +301,16 @@ async function playPart2AudioQueue(){
       source.start(ctx.currentTime+0.02);
       playbackStarted=true;
       if(match){
+       const playedNumber=Number(match[1]);
+       if(part2Mode){
+        part2PendingPlayback.delete(playedNumber);
+        part2FailedPlayback.delete(playedNumber);
+        part2DeliveredNumbers.add(playedNumber);
+       }
        part2LastSpoken={number:Number(match[1]),letter:match[2]};
-       $("replayPart2Audio").style.display="block";
+       const retryBtn=$("replayPart2Audio");
+       retryBtn.style.display="block";
+       retryBtn.textContent=spoken+" 다시 듣기";
       }
      }
      catch(e){finish(e)}
@@ -332,6 +340,17 @@ async function playPart2AudioQueue(){
       }
      },260);
      break;
+    }
+    if(match&&part2Mode){
+     const number=Number(match[1]);
+     part2PendingPlayback.delete(number);
+     part2FailedPlayback.set(number,spoken);
+     // A final failed playback must not disappear behind the next question.
+     part2LastSpoken={number,letter:match[2]};
+     const retryBtn=$("replayPart2Audio");
+     retryBtn.style.display="block";
+     retryBtn.textContent=spoken+" 다시 듣기 (출력 실패)";
+     $("part2SpeedStats").textContent=spoken+" · 음성 출력 실패 · 화면에 정답 보관 · 직접 재생 가능";
     }
     setTtsStatus(spoken+" · 정답 음성 출력 실패: "+msg+" · 다시 듣기 가능");
     // Avoid running speechSynthesis automatically, which may mute iOS microphone.
@@ -373,10 +392,16 @@ let part2NextAudibleNumber=7;
 const part2ReadyToSpeak=new Map();
 const part2AnswerReceivedAt=new Map();
 const part2DeliveredNumbers=new Set();
+// Distinguish "queued" from "actually started playback": previously a failed
+// source.start was still permanently recorded as delivered.
+const part2PendingPlayback=new Map();
+const part2FailedPlayback=new Map();
 function part2ResetDelivery(first){
  part2NextAudibleNumber=first;
  part2ReadyToSpeak.clear();
  part2DeliveredNumbers.clear();
+ part2PendingPlayback.clear();
+ part2FailedPlayback.clear();
  part2AnswerReceivedAt.clear();
  part2PrefetchLastTry.clear();
 }
@@ -385,7 +410,7 @@ function part2DrainOrderedAudio(){
  while(part2ReadyToSpeak.has(part2NextAudibleNumber)){
   const next=part2ReadyToSpeak.get(part2NextAudibleNumber);
   part2ReadyToSpeak.delete(part2NextAudibleNumber);
-  part2DeliveredNumbers.add(part2NextAudibleNumber);
+  part2PendingPlayback.set(part2NextAudibleNumber,next.spoken);
   enqueuePart2AudioRaw(next.id,next.spoken);
   part2NextAudibleNumber++;
   count++;
