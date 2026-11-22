@@ -242,14 +242,27 @@ async function playPart2AudioQueue(){
        void preparePart2AnswerClips(number);
       }
       const retry=Number(job.retry||0);
-      if(retry<60){
-       if(retry===0||retry%10===0)part2Trace("음성 준비 대기",number,String(retry*200)+"ms");
+      if(retry<15){
+       if(retry===0||retry%5===0)part2Trace("음성 준비 대기",number,String(retry*200)+"ms");
        part2AudioQueue.unshift({...job,retry:retry+1});
-       setTtsStatus(spoken+" · 음성 파일 준비 중 · 영어 분석 지속 ("+Math.round(retry*0.2*10)/10+"초)");
+       setTtsStatus(spoken+" · 준비 음성 확인 중 · 영어 분석 지속 ("+(retry*0.2).toFixed(1)+"초)");
        setTimeout(()=>{if(liveRunning&&part2Mode)void playPart2AudioQueue()},200);
        break;
       }
-      throw Error("음성 파일 준비 12초 초과 · 출력 실패 · 마이크 분석 유지");
+      // Cache/prefetch may stall on cellular Safari. Request only this short
+      // answer directly instead of silently dropping it after a long wait.
+      part2Trace("음성 직접 복구",number,spoken);
+      setTtsStatus(spoken+" · 사전 준비 지연 · 단일 음성 직접 복구");
+      const response=await authed(API+"?action=speak-answer",{
+       method:"POST",headers:{"Content-Type":"application/json"},
+       body:JSON.stringify({id,spoken})
+      });
+      if(!response.ok){
+       const err=await response.json().catch(()=>({}));
+       throw Error("음성 직접 복구 HTTP "+response.status+": "+(err.error||"unknown"));
+      }
+      const encoded=await response.arrayBuffer();
+      buffer=await ctx.decodeAudioData(encoded.slice(0));
      }else{
      setTtsStatus(spoken+" · 사전 준비 음성 없음 · 서버 음성 요청");
      const response=await authed(API+"?action=speak-answer",{
