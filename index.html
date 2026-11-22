@@ -537,8 +537,10 @@ function part2ResetStreaming(){
  part2PreviewLimitReached=false;
  resetVAD();vadPreroll=[];vadPreSamples=0;
 }
-async function part2SendPreview(force=false){
- if(typeof part2StreamActive!=="undefined"&&part2StreamActive)return;
+async function part2SendPreview(force=false,streamRecovery=false){
+ // Ordinarily WebRTC owns ASR. Allow a one-shot WAV recovery only when the
+ // NEXT spoken question started but the current answer was never resolved.
+ if(typeof part2StreamActive!=="undefined"&&part2StreamActive&&!streamRecovery)return;
  if(!liveRunning||!part2Mode||part2PreviewLimitReached||part2PreviewInFlight||!token()||liveFrameCount<liveRate*2.5)return;
  const t=performance.now();
  if(!force&&t-part2PreviewAt<PART2_PREVIEW_INTERVAL_MS)return;
@@ -584,9 +586,10 @@ async function part2SendPreview(force=false){
      return;
    }
    part2Candidate={number,letter:result.answer,questionFingerprint:fingerprint,previewedSeconds:size/rate,at:performance.now()};
-   if(result.following_question_started){
-    // The next question is already underway; report the late result rather than
-    // holding question 7 until the end of question 8.
+   if(result.following_question_started||streamRecovery){
+    // The next question is already underway, or the streaming boundary
+    // has independently confirmed it; do not require VAD silence here.
+    // Deliver a late 7 while analysis of 8 continues.
     const spoken=number+"번 "+result.answer;
     if(part2AnnouncedNumbers.has(number))return;
     part2AnnouncedNumbers.add(number);

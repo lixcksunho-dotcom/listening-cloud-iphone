@@ -7,6 +7,7 @@ let part2StreamEpoch=0,part2StreamSolveBusy=false,part2StreamSolveAgain=false;
 let part2StreamRecentChecked="",part2StreamRecentAt=0;
 let part2EarlyBusy=false,part2EarlyFingerprint="",part2EarlyCheckedAt=0;
 let part2StreamFirstUntranscribedSpeechAt=0,part2StreamWatchdog=null;
+let part2StreamRecoveryFor=0,part2StreamRecoveryTimer=null;
 function part2StreamNoteMic(rms){
  if(!part2StreamActive)return;
  if(rms>0.011&&!part2StreamFirstUntranscribedSpeechAt)
@@ -26,6 +27,8 @@ function part2StopRealtimeStream(reason="stopped"){
  part2EarlyBusy=false;part2EarlyFingerprint="";part2EarlyCheckedAt=0;
  part2StreamFirstUntranscribedSpeechAt=0;
  clearInterval(part2StreamWatchdog);part2StreamWatchdog=null;
+ clearTimeout(part2StreamRecoveryTimer);part2StreamRecoveryTimer=null;
+ part2StreamRecoveryFor=0;
  const dc=part2StreamDc,pc=part2StreamPc;
  part2StreamDc=null;part2StreamPc=null;
  try{dc?.close()}catch{}
@@ -63,7 +66,21 @@ function part2StreamCandidate(number){
   const next=marks.find(m=>(m.index??0)>(matching.index??0)&&Number(m[1])!==number);
   return text.slice(matching.index??0,next?.index??text.length).trim();
  }
- if(marks.length)return "";
+ if(marks.length){
+  // Safari ASR occasionally drops the spoken "Number seven" but recognizes
+  // "Number eight". Preserve the previous complete item before that marker.
+  const first=marks[0];
+  if(Number(first[1])===number+1){
+   const prefix=text.slice(0,first.index??0).trim();
+   const q=prefix.match(/\b(?:who|what|which|whose|where|when|why|how|should|would|could|can|did|does|do|is|are|was|were|will|have|has)\b/i);
+   if(q){
+    const candidate=prefix.slice(q.index??0).trim();
+    const sentences=(candidate.match(/[.!?](?=\s|$)/g)||[]).length;
+    if(sentences>=4)return candidate;
+   }
+  }
+  return "";
+ }
  const q=text.match(/\b(?:who|what|which|whose|where|when|why|how|should|would|could|can|did|does|do|is|are|was|were|will|have|has)\b/i);
  return q?text.slice(q.index??0).trim():"";
 }
@@ -237,6 +254,35 @@ function part2StreamReceive(event){
    part2StreamItems.delete(old);
  }
  part2StreamMaybeSolve();
+ // If item 8 is audible while 7 is unresolved, the live transcript may have
+ // omitted 7's number or failed to delimit the C reply. Run one independent
+ // retained-audio recovery without advancing the numbered playback cursor.
+ const expected=part2ExpectedNumber;
+ if(part2StreamRecoveryFor&&part2StreamRecoveryFor<expected){
+  clearTimeout(part2StreamRecoveryTimer);part2StreamRecoveryTimer=null;
+  part2StreamRecoveryFor=0;
+ }
+ if(!part2AnnouncedNumbers.has(expected)&&!part2StreamRecoveryFor){
+  const text=part2StreamJoinedText();
+  const wordNames=["zero","one","two","three","four","five","six","seven","eight","nine",
+   "ten","eleven","twelve","thirteen","fourteen","fifteen","sixteen","seventeen",
+   "eighteen","nineteen","twenty"];
+  const next=expected+1;
+  const numberPattern=next<=20?"(?:"+next+"|"+wordNames[next]+")":String(next);
+  const boundary=new RegExp("\\b(?:number|question)\\s+"+numberPattern+"\\b","i");
+  if(boundary.test(text)){
+   part2StreamRecoveryFor=expected;
+   part2Trace("다음 번호 감지 · 이전 정답 복구 예약",expected);
+   part2StreamStatus(expected+"번 정답 지연 · 다음 번호 인식 · 이전 문항 보조 분석");
+   const epoch=part2StreamEpoch;
+   part2StreamRecoveryTimer=setTimeout(()=>{
+    if(epoch!==part2StreamEpoch||!part2StreamActive||!liveRunning
+       ||part2ExpectedNumber!==expected||part2AnnouncedNumbers.has(expected))return;
+    part2Trace("이전 정답 음원 기반 복구 요청",expected);
+    void part2SendPreview(true,true);
+   },1100);
+  }
+ }
 }
 async function startPart2RealtimeStream(){
  if(!liveRunning||!part2Mode||!document.getElementById("part2UseRealtime")?.checked||!liveStream)return;
