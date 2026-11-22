@@ -283,21 +283,49 @@ async function playPart2AudioQueue(){
      source.buffer=buffer;
      // Slow down the fast server-generated numbered clip for clarity.
      if(part2Mode)source.playbackRate.value=0.88;
-     const louder=ctx.createGain();louder.gain.value=1.45;
+     // Avoid Safari output clipping; keep audible gain within a safe range.
+     const louder=ctx.createGain();louder.gain.value=1.0;
      source.connect(louder);louder.connect(ctx.destination);
      let settled=false;
      const finish=(err)=>{
       if(settled)return;
       settled=true;
       clearTimeout(watchdog);
+      clearInterval(outputPulse);
+      ctx.removeEventListener("statechange",onOutputState);
       part2OutputSource=null;
       if(err){try{source.stop()}catch{}}
       try{source.disconnect();louder.disconnect()}catch{}
       if(err)reject(err);else resolve(null);
      };
-     // If Safari suspends the audio graph, onended might never fire.
-     const watchdog=setTimeout(()=>finish(Error("재생 종료 신호 지연 · 오디오 엔진 "+ctx.state)),Math.max(2000,buffer.duration*1000+1300));
-     source.onended=()=>finish(ctx.state==="running"?null:Error("음성 출력 중 오디오 엔진 "+ctx.state));
+     // AudioBufferSourceNode.start() is only a schedule request. It is NOT
+     // proof that the numbered answer was actually played to completion.
+     // Track output-state interruptions until onended, and retry if stopped.
+     let outputInterrupted=false;
+     const onOutputState=()=>{
+      if(ctx.state!=="running")outputInterrupted=true;
+     };
+     ctx.addEventListener("statechange",onOutputState);
+     // iOS can suspend/resume between two statechange notifications.
+     // A short clock check also catches an output graph that stops advancing.
+     let lastClock=ctx.currentTime,lastProgress=performance.now();
+     const outputPulse=setInterval(()=>{
+      if(ctx.state!=="running")outputInterrupted=true;
+      const current=ctx.currentTime;
+      if(current>lastClock+0.005){lastClock=current;lastProgress=performance.now();}
+      else if(performance.now()-lastProgress>450)outputInterrupted=true;
+     },45);
+     const originalFinish=finish;
+     // Safari can end sources while its audio session is interrupted.
+     const watchdog=setTimeout(()=>{
+      ctx.removeEventListener("statechange",onOutputState);
+      originalFinish(Error("재생 종료 신호 지연 · 오디오 엔진 "+ctx.state));
+     },Math.max(2400,buffer.duration/Math.max(0.1,source.playbackRate.value)*1000+1400));
+     source.onended=()=>{
+      ctx.removeEventListener("statechange",onOutputState);
+      originalFinish(ctx.state==="running"&&!outputInterrupted?null:
+       Error("음성 출력 중 오디오 엔진 일시 중지 또는 전환"));
+     };
      try{
       const n=Number(match?.[1]);
       const acceptedAt=part2AnswerReceivedAt.get(n);
@@ -312,9 +340,8 @@ async function playPart2AudioQueue(){
       if(match){
        const playedNumber=Number(match[1]);
        if(part2Mode){
-        part2PendingPlayback.delete(playedNumber);
-        part2FailedPlayback.delete(playedNumber);
-        part2DeliveredNumbers.add(playedNumber);
+        // Keep the answer pending until the output buffer FINISHES.
+        part2Trace("재생 시작 · 완료 대기",playedNumber,ctx.state);
        }
        part2LastSpoken={number:Number(match[1]),letter:match[2]};
        const retryBtn=$("replayPart2Audio");
@@ -324,6 +351,15 @@ async function playPart2AudioQueue(){
      }
      catch(e){finish(e)}
     });
+    // Mark only after onended confirms a non-interrupted audio graph.
+    // The browser still cannot prove that the listener physically heard it.
+    if(match&&part2Mode&&liveRunning){
+     const completedNumber=Number(match[1]);
+     part2PendingPlayback.delete(completedNumber);
+     part2FailedPlayback.delete(completedNumber);
+     part2DeliveredNumbers.add(completedNumber);
+     part2Trace("오디오 재생 종료 확인",completedNumber,spoken);
+    }
     const framesWhileSpeaking=micFramesSeen-framesBeforeAudio;
     if(liveRunning&&part2Mode){
      if(framesWhileSpeaking>0&&liveStream?.getAudioTracks()?.[0]?.readyState==="live")
@@ -343,7 +379,7 @@ async function playPart2AudioQueue(){
      part2DeliveredNumbers.delete(Number(match[1]));
      part2PendingPlayback.set(Number(match[1]),spoken);
     }
-    const engineFault=/오디오 엔진|재생 종료 신호 지연/i.test(msg);
+    const engineFault=/오디오 엔진|재생 종료 신호 지연|음성 출력 중/i.test(msg);
     const retries=Number(job.outputRetry||0);
     if(engineFault&&part2Mode&&liveRunning&&retries<2){
      part2AudioQueue.unshift({...job,outputRetry:retries+1});
