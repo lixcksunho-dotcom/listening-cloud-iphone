@@ -5,6 +5,7 @@
 let part2StreamPc=null,part2StreamDc=null,part2StreamActive=false;
 let part2StreamEpoch=0,part2StreamSolveBusy=false,part2StreamSolveAgain=false;
 let part2StreamRecentChecked="",part2StreamRecentAt=0;
+let part2EarlyBusy=false,part2EarlyFingerprint="",part2EarlyCheckedAt=0;
 let part2StreamFirstUntranscribedSpeechAt=0,part2StreamWatchdog=null;
 function part2StreamNoteMic(rms){
  if(!part2StreamActive)return;
@@ -22,6 +23,7 @@ function part2StopRealtimeStream(reason="stopped"){
  part2StreamActive=false;part2StreamSolveBusy=false;part2StreamSolveAgain=false;
  part2StreamItems.clear();part2StreamOrder=[];
  part2StreamRecentChecked="";
+ part2EarlyBusy=false;part2EarlyFingerprint="";part2EarlyCheckedAt=0;
  part2StreamFirstUntranscribedSpeechAt=0;
  clearInterval(part2StreamWatchdog);part2StreamWatchdog=null;
  const dc=part2StreamDc,pc=part2StreamPc;
@@ -64,6 +66,75 @@ function part2StreamCandidate(number){
  if(marks.length)return "";
  const q=text.match(/\b(?:who|what|which|whose|where|when|why|how|should|would|could|can|did|does|do|is|are|was|were|will|have|has)\b/i);
  return q?text.slice(q.index??0).trim():"";
+}
+function part2StreamMaybeEarlySolve(){
+ if(!part2StreamActive||!liveRunning||!part2Mode||part2EarlyBusy)return;
+ const number=part2ExpectedNumber;
+ if(part2AnnouncedNumbers.has(number))return;
+ const item=part2StreamCandidate(number);
+ if(!item||item.length<45)return;
+ const marks=[...item.matchAll(/(?:^|\s)([ABC])[.)](?=\s)/gi)];
+ const markers=marks.map(m=>m[1].toUpperCase()).join("");
+ let question="",a="",b="";
+ if(markers==="AB"){
+  question=item.slice(0,marks[0].index).trim();
+  a=item.slice((marks[0].index??0)+marks[0][0].length,marks[1].index).trim();
+  b=item.slice((marks[1].index??0)+marks[1][0].length).trim();
+ }else if(!markers){
+  // Some TOEIC recordings omit spoken A/B labels. Use the three
+  // completed sentences: question, first reply, second reply.
+  const clean=item.replace(/^(?:number|question)\s+\d{1,3}[.:]?\s*/i,"");
+  const sentences=(clean.match(/[^.!?]+[.!?]+/g)||[]).map(x=>x.trim());
+  if(sentences.length!==3||clean.replace(/[^.!?]+[.!?]+/g,"").trim())return;
+  [question,a,b]=sentences;
+ }else return;
+ if(!question.includes("?")||question.split(/\s+/).length<4
+    ||a.split(/\s+/).length<2||b.split(/\s+/).length<2
+    ||!/[.!?]$/.test(a)||!/[.!?]$/.test(b))return;
+ const prepared="Number "+number+". "+question+" A. "+a+" B. "+b;
+ const fingerprint=number+"|"+item;
+ if(fingerprint===part2EarlyFingerprint&&performance.now()-part2EarlyCheckedAt<8000)return;
+ part2EarlyFingerprint=fingerprint;part2EarlyCheckedAt=performance.now();
+ part2EarlyBusy=true;
+ const epoch=part2StreamEpoch,abort=new AbortController(),timer=setTimeout(()=>abort.abort(),7500);
+ void (async()=>{
+  try{
+   part2Trace("A·B 소거법 검토",number);
+   const response=await authed(API+"?action=early-eliminate-part2",{
+    method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({number,transcript:prepared.slice(0,3300)}),signal:abort.signal
+   });
+   if(!response.ok)return;
+   const result=await response.json();
+   if(epoch!==part2StreamEpoch||!part2StreamActive||!liveRunning||!part2Mode
+      ||number!==part2ExpectedNumber||part2AnnouncedNumbers.has(number))return;
+   // If C has begun while the early verdict was in flight, await the full solver.
+   const latest=part2StreamCandidate(number);
+   // Any transcript change, including the beginning of an unlabelled C,
+   // invalidates this early decision.
+   if(latest!==item)return;
+   if(result.ready===true&&result.answer==="C"&&Number(result.question_number)===number){
+    const fp=part2QuestionFingerprint(item);
+    const previous=part2QuestionFingerprints.get(number-1);
+    if(previous&&part2QuestionRepeated(fp,previous))return;
+    part2AnnouncedNumbers.add(number);
+    if(fp)part2QuestionFingerprints.set(number,fp);
+    const spoken=number+"번 C";
+    queuePart2Audio("preview-stream-early-"+liveSessionId+"-"+number,spoken);
+    part2ExpectedNumber=number+1;
+    part2Trace("A·B 소거법 C 조기 확정",number,spoken);
+    void preparePart2AnswerClips(number+1);
+    part2StreamStatus("A·B 소거법 조기 확정 · "+spoken+" · 다음 문제 계속 수음");
+    liveMessage(spoken+" · A·B 소거법으로 조기 판단");
+    part2StreamRecentChecked="";
+   }
+  }catch(error){
+   if(epoch===part2StreamEpoch)part2Trace("A·B 소거법 대기",number,String(error).slice(0,60));
+  }finally{
+   clearTimeout(timer);
+   if(epoch===part2StreamEpoch)part2EarlyBusy=false;
+  }
+ })();
 }
 function part2StreamMaybeSolve(){
  if(!part2StreamActive||!liveRunning||!part2Mode)return;
@@ -226,7 +297,9 @@ async function startPart2RealtimeStream(){
    if(part2StreamFirstUntranscribedSpeechAt&&
       performance.now()-part2StreamFirstUntranscribedSpeechAt>12500)
     part2StreamFallback("영어 수음 대비 전사 결과 지연 12초");
-  },1200);
+   part2StreamMaybeEarlySolve();
+   part2StreamMaybeSolve();
+  },1000);
   part2Trace("스트리밍 연결 성공",part2ExpectedNumber);
   part2StreamStatus("실시간 스트리밍 연결됨 · 정답만 음성 안내 · 연속 수음");
  }catch(error){
