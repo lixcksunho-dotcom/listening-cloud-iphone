@@ -94,6 +94,75 @@ const LIVE_TEXT_WINDOW=5;
 const VOICE_WINDOW_SECONDS=3.5;
 let numberDetected=false,detectedQuestionNumber=null;
 let part2OutputCtx=null,part2OutputSource=null;
+let part2MediaPlayer=null,part2MediaObjectUrls=new Map();
+let part2MediaPrimed=false;
+function part2MediaKey(number,letter){return number+":"+letter}
+function part2StoreMediaClips(number,clips){
+ if(!isIOSPart2Device()||!clips)return;
+ for(const letter of ["A","B","C"]){
+  if(typeof clips[letter]!=="string")continue;
+  const key=part2MediaKey(number,letter);
+  if(part2MediaObjectUrls.has(key))continue;
+  const binary=atob(clips[letter]);
+  const bytes=new Uint8Array(binary.length);
+  for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
+  part2MediaObjectUrls.set(key,URL.createObjectURL(new Blob([bytes],{type:"audio/wav"})));
+ }
+}
+function part2PrimeMediaPlayer(){
+ if(!isIOSPart2Device())return;
+ if(!part2MediaPlayer){
+  part2MediaPlayer=document.createElement("audio");
+  part2MediaPlayer.preload="auto";
+  part2MediaPlayer.playsInline=true;
+  part2MediaPlayer.setAttribute("playsinline","");
+  part2MediaPlayer.style.display="none";
+  document.body.appendChild(part2MediaPlayer);
+ }
+ // The initial play call must happen synchronously inside the Start tap.
+ if(!part2MediaPrimed){
+  const sampleRate=8000, bytes=new Uint8Array(44+sampleRate/8);
+  const view=new DataView(bytes.buffer);
+  const word=(offset,value)=>{for(let i=0;i<value.length;i++)bytes[offset+i]=value.charCodeAt(i)};
+  word(0,"RIFF");view.setUint32(4,bytes.length-8,true);
+  word(8,"WAVE");word(12,"fmt ");view.setUint32(16,16,true);
+  view.setUint16(20,1,true);view.setUint16(22,1,true);
+  view.setUint32(24,sampleRate,true);view.setUint32(28,sampleRate,true);
+  view.setUint16(32,1,true);view.setUint16(34,8,true);
+  word(36,"data");view.setUint32(40,bytes.length-44,true);
+  bytes.fill(128,44);
+  const silentUrl=URL.createObjectURL(new Blob([bytes],{type:"audio/wav"}));
+  part2MediaPlayer.src=silentUrl;
+  part2MediaPlayer.volume=1;
+  part2MediaPrimed=true;
+  void part2MediaPlayer.play().catch(e=>part2Trace("HTML 오디오 초기화 제한",0,String(e))).finally(()=>URL.revokeObjectURL(silentUrl));
+ }
+}
+async function part2PlayMediaAnswer(number,letter){
+ const url=part2MediaObjectUrls.get(part2MediaKey(number,letter));
+ const player=part2MediaPlayer;
+ if(!url||!player)throw Error("HTML 오디오 파일 준비 안 됨");
+ player.pause();player.src=url;player.load();player.playbackRate=0.9;
+ part2Trace("HTML 미디어 재생 요청",number,letter);
+ await Promise.race([player.play(),new Promise((_,reject)=>
+  setTimeout(()=>reject(Error("HTML 오디오 시작 제한")),1800))]);
+ await new Promise((resolve,reject)=>{
+  let done=false;
+  const cleanup=()=>{clearTimeout(watch);player.removeEventListener("ended",onEnd);
+   player.removeEventListener("error",onError);player.removeEventListener("pause",onPause)};
+  const finish=(error)=>{if(done)return;done=true;cleanup();error?reject(error):resolve()};
+  const onEnd=()=>finish();
+  const onError=()=>finish(Error("HTML 오디오 디코딩 오류"));
+  const onPause=()=>{if(!player.ended)finish(Error("HTML 오디오 재생 중단"))};
+  player.addEventListener("ended",onEnd);
+  player.addEventListener("error",onError);
+  player.addEventListener("pause",onPause);
+  const watch=setTimeout(()=>finish(Error("HTML 오디오 종료 지연")),
+   Math.max(2800,player.duration*1200+1500||4000));
+  if(player.ended)finish();
+ });
+ part2Trace("HTML 미디어 재생 종료",number,letter);
+}
 const part2AudioQueue=[];
 const preparedAnswers=new Map();
 const preparingAnswers=new Set();
@@ -130,6 +199,7 @@ async function part2LoadCachedAudio(number){
   const prepared=await decodePart2AudioClips(payload);
   if(!prepared)throw Error("incomplete_cache");
   preparedAnswers.set(number,prepared);
+  part2StoreMediaClips(number,payload);
   return true;
  }catch{
   try{localStorage.removeItem(part2CacheKey(number))}catch{}
@@ -155,6 +225,7 @@ async function preparePart2AnswerClips(number){
   const prepared=await decodePart2AudioClips(payload.clips);
   if(prepared){
    preparedAnswers.set(number,prepared);
+   part2StoreMediaClips(number,payload.clips);
    // Only audio clips are stored: no token, transcription, or credential.
    try{localStorage.setItem(part2CacheKey(number),JSON.stringify(payload.clips))}catch{}
    // Background prefetch must never overwrite a live answer's playback status.
@@ -225,6 +296,24 @@ async function playPart2AudioQueue(){
    const match=spoken.match(/^(\d{1,3})번 ([ABC])$/);
    let playbackStarted=false;
    try{
+    // On iPhone, avoid routing numbered answers through the microphone's
+    // AudioContext. HTMLMediaElement uses the device's normal media path.
+    if(part2Mode&&isIOSPart2Device()&&!job.mediaFailed&&match
+      &&part2MediaObjectUrls.has(part2MediaKey(Number(match[1]),match[2]))){
+     const number=Number(match[1]),framesBefore=micFramesSeen;
+     setTtsStatus(spoken+" · iPhone 미디어 출력 경로 재생 중");
+     await part2PlayMediaAnswer(number,match[2]);
+     if(!liveRunning)continue;
+     part2PendingPlayback.delete(number);part2FailedPlayback.delete(number);
+     part2DeliveredNumbers.add(number);
+     part2LastSpoken={number,letter:match[2]};
+     const retryBtn=$("replayPart2Audio");
+     retryBtn.style.display="block";retryBtn.textContent=spoken+" 다시 듣기";
+     part2Trace("HTML 미디어 완료 처리",number,
+       "마이크 프레임 "+(micFramesSeen-framesBefore));
+     setTtsStatus(spoken+" · iPhone 미디어 재생 종료 (실제 청취 미확인)");
+     continue;
+    }
     const ctx=part2PlaybackContext();
     if(!ctx||ctx.state==="closed")throw Error("아이폰 오디오 엔진 없음");
     let buffer=match?preparedAnswers.get(Number(match[1]))?.[match[2]]:null;
@@ -374,6 +463,15 @@ async function playPart2AudioQueue(){
     // Retry only playback-engine interruptions (not invalid files or other errors).
     const msg=String(error);
     part2Trace("음성 출력 오류",Number(match?.[1])||0,msg);
+    if(part2Mode&&liveRunning&&isIOSPart2Device()&&!job.mediaFailed&&match
+       &&part2MediaObjectUrls.has(part2MediaKey(Number(match[1]),match[2]))){
+     // Only a failing HTML player falls back to the predecoded Web Audio
+     // path. Never drop the answer or stop the microphone.
+     part2AudioQueue.unshift({...job,mediaFailed:true});
+     part2Trace("HTML 미디어 실패 · Web Audio 전환",Number(match[1]),msg);
+     setTimeout(()=>{if(liveRunning&&part2Mode)void playPart2AudioQueue()},100);
+     break;
+    }
     // An onended/audio-session failure after source.start must revoke delivery.
     if(match&&part2Mode){
      part2DeliveredNumbers.delete(Number(match[1]));
@@ -1071,7 +1169,7 @@ $("liveStart").onclick=async()=>{
  if(!token()){liveMessage("먼저 클라우드 연결 상태를 확인하세요.");return}
  // iOS audio output must be unlocked synchronously during this user gesture.
   if(selectedMode()==="part2"){
-  try{unlockPart2Output()}catch(e){setTtsStatus("아이폰 음성 출력 준비 실패: "+String(e))}
+  try{unlockPart2Output();part2PrimeMediaPlayer()}catch(e){setTtsStatus("아이폰 음성 출력 준비 실패: "+String(e))}
   const first=Number($("part2Start").value)||7;
   // Never begin listening before the FIRST TWO numbered voice clips are
   // decoded. Previously 7 and 8 could complete before their audio existed.
